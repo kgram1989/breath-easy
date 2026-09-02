@@ -17,7 +17,7 @@ npm run voices  # regenerate voice clips (needs piper + ffmpeg; see tools/build-
 | `app.js` | Everything: patterns, audio engine, gauge, screen hold, UI |
 | `styles.css` | Night-dashboard theme, amber on near-black |
 | `audio/soft/`, `audio/warm/` | Six voice clips per voice, 22.05 kHz mono MP3 |
-| `sw.js` | Cache-first service worker; **update `ASSETS` when adding files** |
+| `sw.js` | Service worker: shell network-first, media cache-first; **update `MEDIA_ASSETS` when adding files** |
 | `test/dom.test.cjs` | Loads the real page in jsdom and clicks through it |
 
 ## Constraints that took a long time to get right
@@ -36,6 +36,8 @@ Do not "simplify" these. Each one is load-bearing and the failure mode is silent
 
 **Inaudible 32 Hz carrier during sessions.** Bluetooth A2DP goes dormant between sounds and swallows the front of short cues. The carrier holds the link open.
 
+**The shell is never cache-first.** A service worker only reinstalls when its own bytes change, so a cache-first handler over `index.html` and `app.js` pins the app to the first build that ever loaded — and neither reloading nor a new tab can break out, because the worker is what answers them. This shipped once and took a while to spot, because every local check with the worker unregistered looked perfect. `index.html`, `app.js`, `styles.css` and the manifest go network-first with a cache fallback; only `audio/` and `icons/`, which never change once shipped, are cache-first. The shell fetch also passes `cache: "no-cache"`, because Pages serves it with a ten-minute max-age.
+
 **Screen hold has two strategies.** `navigator.wakeLock` first; a canvas `captureStream()` fed to an off-screen `<video>` as fallback. Report which is active in the UI — an earlier version failed silently and the bug went unnoticed for days.
 
 **Breath-safety.** No pattern may hold longer than ~10 seconds, use rapid or forced breathing, or need a hand off the wheel. Wim Hof, kapalabhati, and Buteyko holds are excluded on purpose — hypocapnia causes grey-out. If asked to add patterns, check them against this before writing code.
@@ -48,7 +50,7 @@ Do not "simplify" these. Each one is load-bearing and the failure mode is silent
 - Timing comes from `performance.now()` in a `requestAnimationFrame` loop; repaint is throttled to ~32 ms. Never drive breathing timing from CSS transitions or `setInterval`.
 - Colours come from CSS custom properties in `:root`; `app.js` keeps a small `COLOR` map for SVG only.
 - Prefs persist in `localStorage` under the key `breatheasy`.
-- Adding a file means adding it to `sw.js` `ASSETS`, or it won't work offline.
+- Adding an audio file or icon means adding it to `sw.js` `MEDIA_ASSETS`, or it won't work offline.
 
 ## Testing
 

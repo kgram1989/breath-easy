@@ -699,6 +699,24 @@ window.addEventListener("keydown", (e) => {
 renderPanels();
 stop(false);
 
+/* A new worker claims the page as soon as it activates, but the page it
+   claims is still running the old code — so reload once to pick it up. Never
+   mid-session: a reload would cut the cues with the car still moving. */
 if ("serviceWorker" in navigator) {
-  window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloading = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (!hadController || reloading || running) return;
+    reloading = true;
+    location.reload();
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible" || running) return;
+    navigator.serviceWorker.getRegistration().then((r) => r && r.update()).catch(() => {});
+  });
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("sw.js", { updateViaCache: "none" })
+      .then((reg) => reg.update())
+      .catch(() => {});
+  });
 }

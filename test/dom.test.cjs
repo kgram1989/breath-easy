@@ -12,6 +12,7 @@ const check = (name, ok) => { if (!ok) { console.error("FAIL  " + name); failure
 
 const html = read("index.html");
 const js = read("app.js");
+const sw = read("sw.js");
 
 // 1. every element the script reaches for must exist in the markup
 const ids = new Set([...html.matchAll(/id="([^"]+)"/g)].map((m) => m[1]));
@@ -19,11 +20,11 @@ const wanted = new Set([...js.matchAll(/\$\("([^"]+)"\)/g)].map((m) => m[1]));
 for (const id of wanted) check(`element #${id} exists`, ids.has(id));
 
 // 2. every asset referenced anywhere must exist on disk
-const refs = new Set([...(html + js + read("sw.js")).matchAll(/["'](?:\.\/)?((?:audio|icons)\/[^"']+\.(?:mp3|png))["']/g)].map((m) => m[1]));
+const refs = new Set([...(html + js + sw).matchAll(/["'](?:\.\/)?((?:audio|icons)\/[^"']+\.(?:mp3|png))["']/g)].map((m) => m[1]));
 for (const r of refs) check(`asset ${r} exists`, fs.existsSync(path.join(root, r)));
 
 // 3. everything in the service worker cache list must exist
-for (const a of [...read("sw.js").matchAll(/"\.\/([^"]+)"/g)].map((m) => m[1])) {
+for (const a of [...sw.matchAll(/"\.\/([^"]+)"/g)].map((m) => m[1])) {
   check(`cached ${a} exists`, fs.existsSync(path.join(root, a)));
 }
 
@@ -36,6 +37,12 @@ check("no breath hold longer than 10s", ![...js.matchAll(/\["hold(?:Out)?", (\d+
 check("custom sliders cap at 10s", /CUSTOM_MAX = 10\b/.test(js));
 check("custom breaths floor at 2s", /CUSTOM_MIN_BREATH = 2\b/.test(js));
 check("custom cycle floors at 6s", /CUSTOM_MIN_CYCLE = 6\b/.test(js));
+// cache-first over the shell pinned the app to its first build; reload could
+// not escape it, because the worker was answering the reload
+check("shell is fetched network-first", /await fetch\(e\.request, \{ cache: "no-cache" \}\)/.test(sw));
+check("only audio and icons are cache-first", sw.includes("const IMMUTABLE = /\\/(audio|icons)\\//"));
+check("a new worker triggers a reload", /controllerchange/.test(js));
+check("that reload never interrupts a session", /reloading \|\| running/.test(js));
 
 // 5. the page actually runs and responds to taps
 const dom = new JSDOM(html, { runScripts: "outside-only", url: "https://example.com/", pretendToBeVisual: true });
