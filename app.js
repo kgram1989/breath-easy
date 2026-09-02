@@ -1,30 +1,33 @@
 /* Breath Easy — eyes-free breathing cues for the car.
    No framework, no build step, no network calls after first load. */
 
+/* Named for what you need, not for the count. `alt` is the technique's own
+   name, kept as a subtitle so the pattern stays findable by it. Ordered by
+   urgency — the two you reach for mid-drive sit at the top, no scrolling. */
 const PATTERNS = [
-  { id: "coherent", name: "Coherent", phases: [["in", 5.5], ["out", 5.5]],
-    use: "Baseline calm. The resonance rate for heart-rate variability.",
-    why: "About 5.5 breaths a minute. Best default for a long drive — steady, no holds, no strain." },
-  { id: "box", name: "Box", phases: [["in", 4], ["hold", 4], ["out", 4], ["holdOut", 4]],
-    use: "Alert focus. Settles nerves without making you sleepy.",
-    why: "Used by first responders before high-stakes work. Equal counts are easy to hold onto in traffic." },
-  { id: "exhale", name: "Long Exhale", phases: [["in", 4], ["out", 6]],
-    use: "Fastest wind-down. Traffic, tailgaters, after a bad call.",
-    why: "Exhale longer than inhale and the vagus nerve slows the heart. The highest-yield pattern here." },
-  { id: "sigh", name: "Physiological Sigh", phases: [["in", 1.5, 0.75], ["top", 1], ["out", 5], ["holdOut", 1]],
-    use: "Acute stress, right now. Works in two or three rounds.",
+  { id: "sigh", name: "Reset", alt: "Physiological Sigh", phases: [["in", 1.5, 0.75], ["top", 1], ["out", 5], ["holdOut", 1]],
+    use: "Something just happened. Two or three rounds takes the edge off.",
     why: "A double inhale reinflates collapsed air sacs, then a long exhale dumps CO\u2082. The body's own reset." },
-  { id: "triangle", name: "Triangle", phases: [["in", 4], ["hold", 4], ["out", 4]],
-    use: "A gentler box. Good first pattern.",
+  { id: "exhale", name: "Unwind", alt: "Long Exhale", phases: [["in", 4], ["out", 6]],
+    use: "Stop-start traffic, a tailgater, a call that went badly.",
+    why: "Exhale longer than inhale and the vagus nerve slows the heart. The highest-yield pattern here." },
+  { id: "box", name: "Focus", alt: "Box", phases: [["in", 4], ["hold", 4], ["out", 4], ["holdOut", 4]],
+    use: "Merging, bad weather, the last hour of a long shift.",
+    why: "Used by first responders before high-stakes work. Equal counts are easy to hold onto in traffic." },
+  { id: "coherent", name: "Relax", alt: "Coherent", phases: [["in", 5.5], ["out", 5.5]],
+    use: "Nothing wrong, just a long drive. Leave it running.",
+    why: "About 5.5 breaths a minute. Best default for a long drive — steady, no holds, no strain." },
+  { id: "triangle", name: "Gentle Hold", alt: "Triangle", phases: [["in", 4], ["hold", 4], ["out", 4]],
+    use: "New to counted breathing, or holds make you uneasy.",
     why: "One hold instead of two — less air hunger while you get used to counted breathing." },
-  { id: "478", name: "4 \u00b7 7 \u00b7 8", phases: [["in", 4], ["hold", 7], ["out", 8]],
-    use: "Deep wind-down. Stop if you feel light-headed.",
+  { id: "478", name: "Deep Calm", alt: "4 \u00b7 7 \u00b7 8", phases: [["in", 4], ["hold", 7], ["out", 8]],
+    use: "A quiet stretch of road, or parked. Stop if you feel light-headed.",
     why: "The 7-count hold is the longest here. Fine for most people seated; skip it if it makes you swimmy." },
-  { id: "pursed", name: "Pursed Lip", phases: [["in", 2], ["out", 4]],
-    use: "Breathlessness. Exhale through pursed lips, like cooling soup.",
+  { id: "pursed", name: "Recover", alt: "Pursed Lip", phases: [["in", 2], ["out", 4]],
+    use: "Breathless or wheezy. Exhale through pursed lips, like cooling soup.",
     why: "Back-pressure keeps small airways open. Standard in COPD and asthma care." },
-  { id: "slow6", name: "Slow Six", phases: [["in", 6], ["out", 6]],
-    use: "Once 5.5 feels easy. Deeper slowdown.",
+  { id: "slow6", name: "Slow Down", alt: "Slow Six", phases: [["in", 6], ["out", 6]],
+    use: "When Relax starts to feel easy and you want more.",
     why: "Five breaths a minute. Let the belly do the work, not the shoulders." },
 ];
 
@@ -504,10 +507,12 @@ function testSound() {
         <span class="card-name"></span>
         <span class="card-rhythm"></span>
       </span>
+      <span class="card-alt"></span>
       <span class="card-use"></span>
       <span class="rhythm">${p.phases.map((x) => `<i class="r-${x[0]}" style="flex:${x[1] / total}"></i>`).join("")}</span>`;
     b.querySelector(".card-name").textContent = p.name;
     b.querySelector(".card-rhythm").textContent = p.phases.map((x) => x[1]).join(" \u00b7 ");
+    b.querySelector(".card-alt").textContent = p.alt;
     b.querySelector(".card-use").textContent = p.use;
     b.onclick = () => openSession(p);
     wrap.appendChild(b);
@@ -549,7 +554,7 @@ function openSession(p) {
   if ("mediaSession" in navigator) {
     try {
       navigator.mediaSession.metadata = new MediaMetadata({
-        title: `${p.name} breathing`, artist: "Breath Easy",
+        title: `${p.name} · ${p.alt}`, artist: "Breath Easy",
         album: prefs.minutes > 0 ? `${prefs.minutes} minutes` : "Open ended",
       });
       navigator.mediaSession.setActionHandler("play", () => { if (!running) start(); });

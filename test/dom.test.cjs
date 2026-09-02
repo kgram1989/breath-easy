@@ -49,10 +49,12 @@ const d = w.document;
 const click = (el) => el.dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
 const cards = d.querySelectorAll("#patterns .card");
 check("eight patterns render", cards.length === 8);
+const alts = [...d.querySelectorAll("#patterns .card-alt")];
+check("every card names its technique", alts.length === 8 && alts.every((e) => e.textContent.trim()));
 click(d.getElementById("soundToggle"));
 check("settings panel builds", d.querySelectorAll("#soundHome .seg").length >= 6);
 click(cards[1]);
-check("session opens on the tapped pattern", !d.getElementById("session").hidden && d.getElementById("stageName").textContent === "Box");
+check("session opens on the tapped pattern", !d.getElementById("session").hidden && d.getElementById("stageName").textContent === "Unwind");
 check("duration chips render", d.querySelectorAll("#durations .seg").length === 5);
 check("gauge track drawn", !!d.getElementById("track").getAttribute("d"));
 

@@ -28,16 +28,18 @@ Worth doing, and not just for the shortcut. Opened from the Home Screen the page
 
 ## Patterns
 
-| Pattern | Rhythm | For |
-|---|---|---|
-| Coherent | 5.5 · 5.5 | Baseline calm; the HRV resonance rate |
-| Box | 4 · 4 · 4 · 4 | Alert focus without drowsiness |
-| Long Exhale | 4 · 6 | Fastest wind-down |
-| Physiological Sigh | 1.5 · 1 · 5 · 1 | Acute stress, two or three rounds |
-| Triangle | 4 · 4 · 4 | A gentler box |
-| 4 · 7 · 8 | 4 · 7 · 8 | Deep wind-down |
-| Pursed Lip | 2 · 4 | Breathlessness |
-| Slow Six | 6 · 6 | Once 5.5 feels easy |
+Patterns are named for the situation you're in, not the count you're keeping — at speed you know what you need, not how many seconds it takes. The technique's own name sits under it on the card, and the list is ordered by urgency, so the two you grab for mid-drive need no scrolling.
+
+| Name | Technique | Rhythm | For |
+|---|---|---|---|
+| Relax | Coherent | 5.5 · 5.5 | Baseline calm; the HRV resonance rate |
+| Focus | Box | 4 · 4 · 4 · 4 | Alert focus without drowsiness |
+| Unwind | Long Exhale | 4 · 6 | Fastest wind-down |
+| Reset | Physiological Sigh | 1.5 · 1 · 5 · 1 | Acute stress, two or three rounds |
+| Gentle Hold | Triangle | 4 · 4 · 4 | A gentler box |
+| Deep Calm | 4 · 7 · 8 | 4 · 7 · 8 | Deep wind-down |
+| Recover | Pursed Lip | 2 · 4 | Breathlessness |
+| Slow Down | Slow Six | 6 · 6 | Once 5.5 feels easy |
 
 ### Deliberately excluded
 
