@@ -1,0 +1,13 @@
+{
+  "name": "breath-easy",
+  "version": "1.0.0",
+  "description": "Eyes-free breathing exercises for the car",
+  "private": true,
+  "scripts": {
+    "dev": "python3 -m http.server 8000",
+    "test": "node test/dom.test.cjs",
+    "voices": "bash tools/build-voices.sh"
+  },
+  "devDependencies": { "jsdom": "^24.0.0" },
+  "license": "Apache-2.0"
+}

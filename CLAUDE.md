@@ -1,0 +1,55 @@
+# Breath Easy
+
+Eyes-free breathing cues for driving. Static site: `index.html`, `styles.css`, `app.js`. No framework, no build step, no runtime dependencies. Open `index.html` and it runs.
+
+## Commands
+
+```bash
+npm run dev     # serve at localhost:8000 (audio and service worker need a server, not file://)
+npm test        # jsdom smoke test — run before every commit
+npm run voices  # regenerate voice clips (needs piper + ffmpeg; see tools/build-voices.sh)
+```
+
+## Layout
+
+| Path | What |
+|---|---|
+| `app.js` | Everything: patterns, audio engine, gauge, screen hold, UI |
+| `styles.css` | Night-dashboard theme, amber on near-black |
+| `audio/soft/`, `audio/warm/` | Six voice clips per voice, 22.05 kHz mono MP3 |
+| `sw.js` | Cache-first service worker; **update `ASSETS` when adding files** |
+| `test/dom.test.cjs` | Loads the real page in jsdom and clicks through it |
+
+## Constraints that took a long time to get right
+
+Do not "simplify" these. Each one is load-bearing and the failure mode is silent.
+
+**Gauge arc flag.** The dial sweeps 270°, so SVG's large-arc-flag must flip at `value > 2/3`, not `> 0.5`. With `0.5` the arc snaps the wrong way round between 50% and 67% of every breath.
+
+**Cues are noise, not tones.** Pure sines read as alarms — this was tested and rejected by the user twice. Ocean is brown noise through a bandpass sweeping 300→880 Hz. Peak gain is scaled ×4.4 because the bandpass costs that much level; that constant is measured, not guessed. Hum exists only for cabins too noisy for the noise cue.
+
+**Every envelope is a raised cosine.** No attack, no onset. A cue must become audible, not start. Cues run ~90% of their phase.
+
+**No per-second ticking during holds.** A metronome under a breath hold is the opposite of calming.
+
+**Silent looping `<audio>` element.** Not decoration. Web Audio alone often isn't classified as media, so phones play it locally instead of routing to Bluetooth or CarPlay. This element claims the media session.
+
+**Inaudible 32 Hz carrier during sessions.** Bluetooth A2DP goes dormant between sounds and swallows the front of short cues. The carrier holds the link open.
+
+**Screen hold has two strategies.** `navigator.wakeLock` first; a canvas `captureStream()` fed to an off-screen `<video>` as fallback. Report which is active in the UI — an earlier version failed silently and the bug went unnoticed for days.
+
+**Breath-safety.** No pattern may hold longer than ~10 seconds, use rapid or forced breathing, or need a hand off the wheel. Wim Hof, kapalabhati, and Buteyko holds are excluded on purpose — hypocapnia causes grey-out. If asked to add patterns, check them against this before writing code.
+
+## Conventions
+
+- Vanilla JS, no dependencies in the shipped site. `jsdom` is dev-only.
+- Timing comes from `performance.now()` in a `requestAnimationFrame` loop; repaint is throttled to ~32 ms. Never drive breathing timing from CSS transitions or `setInterval`.
+- Colours come from CSS custom properties in `:root`; `app.js` keeps a small `COLOR` map for SVG only.
+- Prefs persist in `localStorage` under the key `breatheasy`.
+- Adding a file means adding it to `sw.js` `ASSETS`, or it won't work offline.
+
+## Testing
+
+`npm test` renders the page in jsdom, asserts all eight patterns build, opens the settings panel, navigates into a session, and checks the gauge draws. It also verifies every `getElementById` target exists in the markup and every asset path exists on disk — those were real bugs, not hypothetical ones.
+
+Web Audio and `captureStream` don't exist in jsdom, so audio paths are stubbed. Anything touching sound needs manual checking on a phone, connected to a car stereo, parked.
