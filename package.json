@@ -9,5 +9,5 @@
     "voices": "bash tools/build-voices.sh"
   },
   "devDependencies": { "jsdom": "^24.0.0" },
-  "license": "Apache-2.0"
+  "license": "MIT"
 }

@@ -69,4 +69,4 @@ Two problems that aren't obvious:
 
 ## Licence
 
-Apache-2.0. Not medical advice.
+MIT. Not medical advice.
