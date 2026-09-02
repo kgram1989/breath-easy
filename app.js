@@ -93,21 +93,66 @@ const endValue = (t, to) => (t === "in" ? (to ?? 1) : t === "top" ? 1 : t === "o
 
 /* ── audio ────────────────────────────────────────────────────── */
 let ctx = null, master = null, toneBus = null, noiseBuf = null, carrier = null;
-const clips = {};
+const clips = {};      // decoded buffers, only valid for the live context
+const clipBytes = {};  // the encoded mp3s, kept so a rebuild needs no network
+let audioStalls = 0, rebuilding = false;
+
+function buildAudio() {
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+  master = ctx.createGain();
+  master.gain.value = 1;
+  master.connect(ctx.destination);
+  const lp = ctx.createBiquadFilter();
+  lp.type = "lowpass"; lp.frequency.value = 2600; lp.Q.value = 0.6;
+  toneBus = ctx.createGain();
+  toneBus.connect(lp); lp.connect(master);
+  noiseBuf = null;  // buffers belong to the context that made them
+  ctx.onstatechange = paintAudioState;
+}
 
 function audio() {
-  if (!ctx) {
-    ctx = new (window.AudioContext || window.webkitAudioContext)();
-    master = ctx.createGain();
-    master.gain.value = 1;
-    master.connect(ctx.destination);
-    const lp = ctx.createBiquadFilter();
-    lp.type = "lowpass"; lp.frequency.value = 2600; lp.Q.value = 0.6;
-    toneBus = ctx.createGain();
-    toneBus.connect(lp); lp.connect(master);
+  if (!ctx) buildAudio();
+  /* resume() rejects routinely — iOS refuses it outside a user gesture — and
+     an unhandled rejection here is silence with nothing to show for it, so
+     the outcome is counted rather than dropped. */
+  if (ctx.state !== "running") {
+    try { ctx.resume().then(paintAudioState, paintAudioState); } catch (e) {}
   }
-  if (ctx.state !== "running") ctx.resume();
   return ctx;
+}
+
+/* iOS parks the context in "interrupted" after a call, Siri, or another app
+   taking the audio session, and Android can leave it suspended after losing
+   audio focus. resume() often will not bring either back — the context has to
+   be thrown away and rebuilt. Without this the cues stay dead for the life of
+   the page, which is why the only cure used to be closing the whole app. */
+async function rebuildAudio() {
+  if (rebuilding) return;
+  rebuilding = true;
+  const old = ctx;
+  carrier = null;
+  for (const k of Object.keys(clips)) delete clips[k];
+  /* Replace before closing: leaving ctx null across the await would let a cue
+     landing mid-rebuild build a stray context that this one then orphans. */
+  buildAudio();
+  try { if (old) await old.close(); } catch (e) {}
+  try { await ctx.resume(); } catch (e) {}
+  await decodeVoice(prefs.voice);
+  if (running) { carrierOn(); keepAudio.play().catch(() => {}); }
+  rebuilding = false;
+  paintAudioState();
+}
+
+/* Runs on the session guard tick and whenever the app comes back to the
+   foreground — the two moments the context is most likely to have died. */
+function guardAudio() {
+  try { if (keepAudio.paused) keepAudio.play().catch(() => {}); } catch (e) {}
+  if (!ctx || rebuilding) return;
+  if (ctx.state === "running") { audioStalls = 0; paintAudioState(); return; }
+  audioStalls++;
+  if (ctx.state === "interrupted" || audioStalls >= 2) { audioStalls = 0; rebuildAudio(); }
+  else audio();
+  paintAudioState();
 }
 
 /* Hum: low sines under a raised cosine. Never starts, just becomes audible. */
@@ -173,17 +218,29 @@ let voiceState = "idle";
 async function loadVoice(id) {
   if (!id || id === "off" || clips[id]) return;
   voiceState = "loading"; renderPanels();
-  const a = audio(), bank = {};
-  await Promise.all(CLIP_NAMES.map(async (k) => {
-    try {
-      const res = await fetch(`${VOICES[id].dir}/${k}.mp3`);
-      bank[k] = await a.decodeAudioData(await res.arrayBuffer());
-    } catch (e) {}
-  }));
-  const ok = Object.keys(bank).length;
-  if (ok) clips[id] = bank;
-  voiceState = ok ? "ready" : "failed";
+  if (!clipBytes[id]) {
+    const bytes = {};
+    await Promise.all(CLIP_NAMES.map(async (k) => {
+      try { bytes[k] = await (await fetch(`${VOICES[id].dir}/${k}.mp3`)).arrayBuffer(); } catch (e) {}
+    }));
+    clipBytes[id] = bytes;
+  }
+  await decodeVoice(id);
+  voiceState = clips[id] ? "ready" : "failed";
   renderPanels();
+}
+
+/* Decoded buffers die with their context, so a rebuild has to decode again.
+   decodeAudioData detaches whatever it is handed, hence the copy — the
+   encoded bytes have to survive for the next rebuild, which may happen on a
+   road with no signal. */
+async function decodeVoice(id) {
+  if (!id || id === "off" || !clipBytes[id]) return;
+  const a = audio(), bank = {};
+  await Promise.all(Object.entries(clipBytes[id]).map(async ([k, raw]) => {
+    try { bank[k] = await a.decodeAudioData(raw.slice(0)); } catch (e) {}
+  }));
+  if (Object.keys(bank).length) clips[id] = bank;
 }
 function playClip(key) {
   const bank = clips[prefs.voice];
@@ -334,6 +391,19 @@ function paintHold() {
   el.classList.toggle("warn", holdState === "none");
 }
 
+/* Same reasoning as the screen-hold line: audio that has died is worth saying
+   out loud, rather than leaving the driver wondering whether they missed a
+   cue. Only shown once a guard tick has actually seen trouble, so a normal
+   suspend on the way into a session never flashes it. */
+function paintAudioState() {
+  const el = $("audioState");
+  if (!el) return;
+  const ok = !!ctx && ctx.state === "running" && !keepAudio.paused;
+  el.hidden = !running || ok || (audioStalls === 0 && !rebuilding);
+  el.textContent = rebuilding ? "sound restarting" : "sound stalled";
+  el.classList.add("warn");
+}
+
 const mmss = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 
 /* ── engine ───────────────────────────────────────────────────── */
@@ -342,8 +412,7 @@ function step() {
 
   if (now - lastGuard > 1.5) {
     lastGuard = now;
-    try { if (ctx && ctx.state !== "running") ctx.resume(); } catch (e) {}
-    try { if (keepAudio.paused) keepAudio.play().catch(() => {}); } catch (e) {}
+    guardAudio();
     try { if (holdVideo && holdVideo.paused) holdVideo.play().catch(() => {}); } catch (e) {}
   }
 
@@ -400,7 +469,11 @@ function step() {
 }
 
 function start() {
-  audio();
+  /* A tap is a user gesture, the one moment a browser reliably lets audio
+     back in — so a context found dead here is rebuilt now rather than waited
+     out on the guard tick. */
+  audioStalls = 0;
+  if (ctx && ctx.state === "interrupted") rebuildAudio(); else audio();
   loadVoice(prefs.voice);
   holdScreen();
   carrierOn();
@@ -412,6 +485,7 @@ function start() {
   $("hint").textContent = "Tap anywhere to pause";
   $("hint").classList.add("running");
   paintHold();
+  paintAudioState();
   raf = requestAnimationFrame(step);
 }
 
@@ -426,6 +500,7 @@ function stop(finished) {
   $("hint").textContent = finished ? "Tap to go again" : "Tap anywhere to begin";
   $("hint").classList.remove("running");
   paintGauge(0, "holdOut", finished ? "Complete" : "Tap to start", finished ? "\u2713" : "\u2014");
+  paintAudioState();
 }
 
 /* ── settings panel, shared by both screens ───────────────────── */
@@ -689,8 +764,10 @@ $("customToggle").onclick = () => {
   if (!slot.hidden) { slot.innerHTML = ""; slot.appendChild(buildCustom()); }
 };
 
+/* Coming back from another app is the likeliest moment for the context to
+   have been suspended or interrupted out from under the session. */
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible" && running) holdScreen();
+  if (document.visibilityState === "visible" && running) { holdScreen(); guardAudio(); }
 });
 window.addEventListener("keydown", (e) => {
   if (e.code === "Space" && !$("session").hidden) { e.preventDefault(); running ? stop(false) : start(); }

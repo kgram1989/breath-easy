@@ -66,6 +66,7 @@ Two problems that aren't obvious:
 
 1. Web Audio on its own often isn't classified as *media*, so the phone plays it locally instead of handing it to Bluetooth or CarPlay. A silent looping `<audio>` element claims the media session and fixes the routing. It also publishes Media Session metadata, so the head unit shows the track and the steering-wheel controls work.
 2. Bluetooth A2DP goes dormant between sounds and swallows the front of short cues. An inaudible 32 Hz carrier runs for the whole session to hold the link open.
+3. A phone call, Siri, or another app taking the audio session can leave the browser's audio context dead in a way that resuming it will not fix. The session watches for this and rebuilds the audio engine from scratch, reporting "sound stalled" next to the screen-hold line while it does — so cues come back on their own instead of needing the app closed and reopened.
 
 ### Keeping the screen on
 

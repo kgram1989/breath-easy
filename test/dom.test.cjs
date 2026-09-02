@@ -91,5 +91,61 @@ check("custom session opens under its own name",
   !d.getElementById("session").hidden && d.getElementById("stageName").textContent === "School run");
 check("custom session reports its rate", /breaths a minute/.test(d.getElementById("whyLine").textContent));
 
-console.log(failures ? `\n${failures} FAILURES` : "\nAll checks passed.");
-process.exit(failures ? 1 : 0);
+/* 7. audio recovery. Web Audio does not exist in jsdom, but the state machine
+   that decides when to rebuild is ordinary logic, and its failure mode — cues
+   dying until the app is closed and reopened — is too quiet to leave untested.
+   A second page is loaded with a context whose state the test can drive. */
+(async () => {
+  const built = [];
+  function fake() {  // a constructor: the app calls `new AudioContext()`
+    const c = {
+      state: "running", currentTime: 0, sampleRate: 44100, destination: {},
+      close: () => { c.state = "closed"; c.closed = true; return Promise.resolve(); },
+      resume: () => { if (c.state === "suspended") c.state = "running"; return Promise.resolve(); },
+      createGain: () => ({ gain: { value: 0, setValueCurveAtTime() {} }, connect() {}, disconnect() {} }),
+      createBiquadFilter: () => ({ type: "", frequency: { value: 0, setValueAtTime() {}, setValueCurveAtTime() {} }, Q: { value: 0 }, connect() {} }),
+      createOscillator: () => ({ type: "", frequency: { value: 0, setValueAtTime() {}, setValueCurveAtTime() {} }, connect() {}, start() {}, stop() {} }),
+      createBufferSource: () => ({ buffer: null, loop: false, connect() {}, start() {}, stop() {} }),
+      createBuffer: () => ({ getChannelData: () => new Float32Array(8) }),
+      decodeAudioData: () => Promise.resolve({}),
+    };
+    built.push(c);
+    return c;
+  }
+  // the canvas screen-hold fallback is unimplemented in jsdom and caught by the
+  // app; drop jsdom's complaints about it so real failures stay readable
+  const quiet = new (require("jsdom").VirtualConsole)();
+  quiet.sendTo(console, { omitJSDOMErrors: true });
+  const dom2 = new JSDOM(html, { runScripts: "outside-only", url: "https://example.com/", pretendToBeVisual: true, virtualConsole: quiet });
+  const w2 = dom2.window, d2 = dom2.window.document;
+  w2.URL.createObjectURL = () => "blob:stub";
+  w2.AudioContext = fake;
+  w2.HTMLMediaElement.prototype.play = () => Promise.resolve();
+  w2.HTMLMediaElement.prototype.pause = () => {};
+  w2.scrollTo = () => {};
+  w2.eval(js);
+
+  const tap = (el) => el.dispatchEvent(new w2.MouseEvent("click", { bubbles: true }));
+  const wake = () => d2.dispatchEvent(new w2.Event("visibilitychange"));
+  Object.defineProperty(d2, "visibilityState", { get: () => "visible", configurable: true });
+
+  tap(d2.querySelectorAll("#patterns .card")[0]);
+  tap(d2.getElementById("stage"));
+  check("a session builds an audio context", built.length === 1);
+
+  built[0].state = "suspended";
+  wake();
+  check("a suspended context is resumed, not replaced", built.length === 1 && built[0].state === "running");
+
+  // the state iOS leaves behind after a call or Siri, which resume() will not clear
+  built[0].state = "interrupted";
+  wake();
+  await new Promise((r) => setTimeout(r, 0));
+  check("an interrupted context is closed", built[0].closed === true);
+  check("an interrupted context is rebuilt", built.length === 2 && built[1].state === "running");
+  check("the session keeps running through a rebuild", !d2.getElementById("session").hidden);
+  check("the stall is reported while it lasts", d2.getElementById("audioState").textContent.startsWith("sound"));
+
+  console.log(failures ? `\n${failures} FAILURES` : "\nAll checks passed.");
+  process.exit(failures ? 1 : 0);
+})();
