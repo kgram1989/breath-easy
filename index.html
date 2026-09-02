@@ -27,6 +27,15 @@
 
   <div id="patterns" class="stack"></div>
 
+  <button id="customToggle" class="disclosure" aria-expanded="false" aria-controls="customPanel">
+    <span class="disclosure-text">
+      <span class="disclosure-title">Custom</span>
+      <span class="disclosure-sub" id="customSummary">Build your own</span>
+    </span>
+    <svg class="chev" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+  </button>
+  <div id="customPanel" class="panel-slot" hidden></div>
+
   <button id="soundToggle" class="disclosure" aria-expanded="false" aria-controls="soundHome">
     <span class="disclosure-text">
       <span class="disclosure-title">Sound</span>
@@ -72,7 +81,7 @@
   </header>
 
   <button id="stage" class="stage">
-    <div id="stageName" class="cap">Reset</div>
+    <div id="stageName" class="cap">Relax</div>
     <svg id="gauge" viewBox="0 0 300 300" aria-hidden="true">
       <path id="track" fill="none" stroke-width="10" stroke-linecap="round"></path>
       <path id="fill" fill="none" stroke-width="10" stroke-linecap="round"></path>

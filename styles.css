@@ -132,4 +132,16 @@ h1 { font-family: var(--mono); font-size: 32px; font-weight: 500; margin: 6px 0 
 }
 .why { color: var(--muted); font-size: 12px; margin-top: 10px; line-height: 1.5; }
 
+/* ── custom builder ───────────────────────────────────────────── */
+.name-input {
+  width: 100%; margin-top: 8px; padding: 11px 12px;
+  border: 1px solid var(--edge); border-radius: 9px;
+  background: var(--ink); color: var(--text); font: inherit; font-size: 15px;
+}
+.name-input::placeholder { color: var(--muted); }
+.panel input[type="range"] { flex: 1; height: 30px; accent-color: var(--amber); background: none; }
+.slider-val { min-width: 44px; text-align: right; font-family: var(--mono); font-size: 13px; color: var(--amber); }
+.warn-note { color: var(--amber); }
+.test:disabled { color: var(--muted); border-color: var(--edge); cursor: default; }
+
 @media (prefers-reduced-motion: reduce) { .chev { transition: none; } }

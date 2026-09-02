@@ -40,6 +40,8 @@ Do not "simplify" these. Each one is load-bearing and the failure mode is silent
 
 **Breath-safety.** No pattern may hold longer than ~10 seconds, use rapid or forced breathing, or need a hand off the wheel. Wim Hof, kapalabhati, and Buteyko holds are excluded on purpose — hypocapnia causes grey-out. If asked to add patterns, check them against this before writing code.
 
+**The custom builder enforces breath-safety in code, not in the UI.** `CUSTOM_MAX` (10s) caps every slider, `CUSTOM_MIN_BREATH` (2s) floors the inhale and exhale, and `CUSTOM_MIN_CYCLE` (6s, the rate of the briskest shipped pattern) blocks Start outright. The cycle floor is the one that matters most — deep breathing at a fast rate is the grey-out path, and neither slider catches it alone. Because `localStorage` is user-editable, the same limits are re-clamped on load rather than trusted to the `min`/`max` attributes that wrote them. A custom pattern drops any hold set to zero instead of running a 0-second phase, which would churn the engine's catch-up loop.
+
 ## Conventions
 
 - Vanilla JS, no dependencies in the shipped site. `jsdom` is dev-only.

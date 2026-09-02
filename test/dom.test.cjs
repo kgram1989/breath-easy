@@ -33,6 +33,9 @@ check("cue envelopes are raised cosine", /hann\(72/.test(js));
 check("bluetooth keep-alive present", /keepAudio/.test(js));
 check("a2dp carrier present", /frequency\.value = 32/.test(js));
 check("no breath hold longer than 10s", ![...js.matchAll(/\["hold(?:Out)?", (\d+(?:\.\d+)?)\]/g)].some((m) => +m[1] > 10));
+check("custom sliders cap at 10s", /CUSTOM_MAX = 10\b/.test(js));
+check("custom breaths floor at 2s", /CUSTOM_MIN_BREATH = 2\b/.test(js));
+check("custom cycle floors at 6s", /CUSTOM_MIN_CYCLE = 6\b/.test(js));
 
 // 5. the page actually runs and responds to taps
 const dom = new JSDOM(html, { runScripts: "outside-only", url: "https://example.com/", pretendToBeVisual: true });
@@ -54,9 +57,32 @@ check("every card names its technique", alts.length === 8 && alts.every((e) => e
 click(d.getElementById("soundToggle"));
 check("settings panel builds", d.querySelectorAll("#soundHome .seg").length >= 6);
 click(cards[1]);
-check("session opens on the tapped pattern", !d.getElementById("session").hidden && d.getElementById("stageName").textContent === "Unwind");
+check("session opens on the tapped pattern", !d.getElementById("session").hidden && d.getElementById("stageName").textContent === "Focus");
 check("duration chips render", d.querySelectorAll("#durations .seg").length === 5);
 check("gauge track drawn", !!d.getElementById("track").getAttribute("d"));
+
+// 6. the custom builder, and the limits it enforces in the markup it writes
+click(d.getElementById("back"));
+click(d.getElementById("customToggle"));
+const sliders = [...d.querySelectorAll("#customPanel input[type=range]")];
+check("custom builder has four sliders", sliders.length === 4);
+check("no custom slider exceeds 10s", sliders.every((s) => +s.max === 10));
+check("custom breath sliders floor at 2s", sliders.filter((s) => +s.min === 2).length === 2);
+check("custom pattern can be named", !!d.querySelector("#customPanel input[type=text]"));
+sliders.forEach((s) => { s.value = s.min; s.dispatchEvent(new w.Event("input", { bubbles: true })); });
+check("a too-quick cycle cannot be started", d.querySelector("#customPanel .test").disabled === true);
+sliders[2].value = 6;
+sliders[2].dispatchEvent(new w.Event("input", { bubbles: true }));
+check("a legal cycle can be started", d.querySelector("#customPanel .test").disabled === false);
+
+// holds are at 0 here, so this also covers dropping empty phases from the pattern
+const nameField = d.querySelector("#customPanel input[type=text]");
+nameField.value = "School run";
+nameField.dispatchEvent(new w.Event("input", { bubbles: true }));
+click(d.querySelector("#customPanel .test"));
+check("custom session opens under its own name",
+  !d.getElementById("session").hidden && d.getElementById("stageName").textContent === "School run");
+check("custom session reports its rate", /breaths a minute/.test(d.getElementById("whyLine").textContent));
 
 console.log(failures ? `\n${failures} FAILURES` : "\nAll checks passed.");
 process.exit(failures ? 1 : 0);

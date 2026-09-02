@@ -2,33 +2,34 @@
    No framework, no build step, no network calls after first load. */
 
 /* Named for what you need, not for the count. `alt` is the technique's own
-   name, kept as a subtitle so the pattern stays findable by it. Ordered by
-   urgency — the two you reach for mid-drive sit at the top, no scrolling. */
+   name, kept as a subtitle so the pattern stays findable by it. Everyday
+   patterns lead; the two you only reach for in a specific bind — an acute
+   stress reset and a breathlessness pattern — sit at the end. */
 const PATTERNS = [
-  { id: "sigh", name: "Reset", alt: "Physiological Sigh", phases: [["in", 1.5, 0.75], ["top", 1], ["out", 5], ["holdOut", 1]],
-    use: "Something just happened. Two or three rounds takes the edge off.",
-    why: "A double inhale reinflates collapsed air sacs, then a long exhale dumps CO\u2082. The body's own reset." },
-  { id: "exhale", name: "Unwind", alt: "Long Exhale", phases: [["in", 4], ["out", 6]],
-    use: "Stop-start traffic, a tailgater, a call that went badly.",
-    why: "Exhale longer than inhale and the vagus nerve slows the heart. The highest-yield pattern here." },
-  { id: "box", name: "Focus", alt: "Box", phases: [["in", 4], ["hold", 4], ["out", 4], ["holdOut", 4]],
-    use: "Merging, bad weather, the last hour of a long shift.",
-    why: "Used by first responders before high-stakes work. Equal counts are easy to hold onto in traffic." },
   { id: "coherent", name: "Relax", alt: "Coherent", phases: [["in", 5.5], ["out", 5.5]],
     use: "Nothing wrong, just a long drive. Leave it running.",
     why: "About 5.5 breaths a minute. Best default for a long drive — steady, no holds, no strain." },
+  { id: "box", name: "Focus", alt: "Box", phases: [["in", 4], ["hold", 4], ["out", 4], ["holdOut", 4]],
+    use: "Merging, bad weather, the last hour of a long shift.",
+    why: "Used by first responders before high-stakes work. Equal counts are easy to hold onto in traffic." },
+  { id: "exhale", name: "Unwind", alt: "Long Exhale", phases: [["in", 4], ["out", 6]],
+    use: "Stop-start traffic, a tailgater, a call that went badly.",
+    why: "Exhale longer than inhale and the vagus nerve slows the heart. The highest-yield pattern here." },
   { id: "triangle", name: "Gentle Hold", alt: "Triangle", phases: [["in", 4], ["hold", 4], ["out", 4]],
     use: "New to counted breathing, or holds make you uneasy.",
     why: "One hold instead of two — less air hunger while you get used to counted breathing." },
   { id: "478", name: "Deep Calm", alt: "4 \u00b7 7 \u00b7 8", phases: [["in", 4], ["hold", 7], ["out", 8]],
     use: "A quiet stretch of road, or parked. Stop if you feel light-headed.",
     why: "The 7-count hold is the longest here. Fine for most people seated; skip it if it makes you swimmy." },
-  { id: "pursed", name: "Recover", alt: "Pursed Lip", phases: [["in", 2], ["out", 4]],
-    use: "Breathless or wheezy. Exhale through pursed lips, like cooling soup.",
-    why: "Back-pressure keeps small airways open. Standard in COPD and asthma care." },
   { id: "slow6", name: "Slow Down", alt: "Slow Six", phases: [["in", 6], ["out", 6]],
     use: "When Relax starts to feel easy and you want more.",
     why: "Five breaths a minute. Let the belly do the work, not the shoulders." },
+  { id: "sigh", name: "Reset", alt: "Physiological Sigh", phases: [["in", 1.5, 0.75], ["top", 1], ["out", 5], ["holdOut", 1]],
+    use: "Something just happened. Two or three rounds takes the edge off.",
+    why: "A double inhale reinflates collapsed air sacs, then a long exhale dumps CO\u2082. The body's own reset." },
+  { id: "pursed", name: "Recover", alt: "Pursed Lip", phases: [["in", 2], ["out", 4]],
+    use: "Breathless or wheezy. Exhale through pursed lips, like cooling soup.",
+    why: "Back-pressure keeps small airways open. Standard in COPD and asthma care." },
 ];
 
 const LABEL = { in: "Inhale", top: "Sip more", hold: "Hold", out: "Exhale", holdOut: "Hold" };
@@ -41,12 +42,32 @@ const CLIP_NAMES = ["inhale", "exhale", "hold", "top", "ready", "done"];
 const DURATIONS = [2, 5, 10, 20, 0];
 const COLOR = { amber: "#E8A33D", amberDim: "#7A5A22", ice: "#78AEC2", muted: "#8C837A", edge: "#2A2521" };
 
+/* Limits on the custom builder, all three breath-safety rather than taste:
+   no hold may outrun the ~10s ceiling, a breath may not be shorter than 2s,
+   and no cycle may run quicker than the briskest shipped pattern (Recover,
+   6s). Deep breathing at a fast rate is how you blow off CO2 and grey out,
+   so the cycle floor matters more than either single slider. */
+const CUSTOM_MAX = 10;
+const CUSTOM_MIN_BREATH = 2;
+const CUSTOM_MIN_CYCLE = 6;
+const CUSTOM_DEFAULT = { name: "", in: 4, hold: 4, out: 4, holdOut: 4 };
+
 /* ── preferences ──────────────────────────────────────────────── */
 const prefs = Object.assign(
   { tone: "ocean", voice: "soft", minutes: 5, vol: 0.85 },
   JSON.parse(localStorage.getItem("breatheasy") || "{}")
 );
 const savePrefs = () => localStorage.setItem("breatheasy", JSON.stringify(prefs));
+
+/* localStorage is user-editable, so the limits are re-applied on load rather
+   than trusted to the slider attributes that wrote them. */
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, Number.isFinite(+v) ? +v : lo));
+prefs.custom = Object.assign({}, CUSTOM_DEFAULT, prefs.custom);
+prefs.custom.name = String(prefs.custom.name || "").slice(0, 24);
+prefs.custom.in = clamp(prefs.custom.in, CUSTOM_MIN_BREATH, CUSTOM_MAX);
+prefs.custom.out = clamp(prefs.custom.out, CUSTOM_MIN_BREATH, CUSTOM_MAX);
+prefs.custom.hold = clamp(prefs.custom.hold, 0, CUSTOM_MAX);
+prefs.custom.holdOut = clamp(prefs.custom.holdOut, 0, CUSTOM_MAX);
 
 /* ── curves ───────────────────────────────────────────────────── */
 const ease = (x) => { const c = Math.min(1, Math.max(0, x)); return c * c * (3 - 2 * c); };
@@ -474,7 +495,94 @@ function renderPanels() {
     const el = $(slot);
     if (!el.hidden) { el.innerHTML = ""; el.appendChild(buildPanel()); }
   }
+  paintCustomSummary();
   renderDurations();
+}
+
+/* \u2500\u2500 custom pattern \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+/* A zero-length phase would make the engine's catch-up loop churn, so an
+   unset hold is dropped from the pattern rather than run as 0 seconds. */
+function customPattern() {
+  const c = prefs.custom, phases = [["in", c.in]];
+  if (c.hold > 0) phases.push(["hold", c.hold]);
+  phases.push(["out", c.out]);
+  if (c.holdOut > 0) phases.push(["holdOut", c.holdOut]);
+  const cycle = phases.reduce((a, x) => a + x[1], 0);
+  return {
+    id: "custom", name: c.name.trim() || "Custom", phases,
+    alt: phases.map((x) => x[1]).join(" \u00b7 "),
+    use: "",
+    why: `Your own rhythm \u2014 ${cycle}s a cycle, about ${(60 / cycle).toFixed(1)} breaths a minute.`,
+  };
+}
+
+function paintCustomSummary() {
+  const p = customPattern();
+  $("customSummary").textContent = `${prefs.custom.name.trim() || "Build your own"} \u00b7 ${p.alt}`;
+}
+
+function buildCustom() {
+  const panel = document.createElement("div");
+  panel.className = "panel";
+
+  const nameCap = document.createElement("div");
+  nameCap.className = "cap"; nameCap.textContent = "Name this one";
+  const name = document.createElement("input");
+  name.className = "name-input"; name.type = "text"; name.maxLength = 24;
+  name.placeholder = "Custom"; name.value = prefs.custom.name;
+  name.setAttribute("aria-label", "Name this pattern");
+  panel.append(nameCap, name);
+
+  const bar = document.createElement("div");
+  bar.className = "rhythm";
+  const note = document.createElement("p");
+  note.className = "panel-note";
+  const go = document.createElement("button");
+  go.className = "test"; go.textContent = "Start";
+
+  /* Only the readouts and the preview are repainted as a slider moves \u2014
+     rebuilding the panel mid-drag would drop the thumb. */
+  const sync = () => {
+    const p = customPattern(), cycle = p.phases.reduce((a, x) => a + x[1], 0);
+    bar.innerHTML = p.phases.map((x) => `<i class="r-${x[0]}" style="flex:${x[1] / cycle}"></i>`).join("");
+    const ok = cycle >= CUSTOM_MIN_CYCLE;
+    note.textContent = ok
+      ? `${cycle}s a cycle \u00b7 about ${(60 / cycle).toFixed(1)} breaths a minute.`
+        + (prefs.custom.out < prefs.custom.in ? " An exhale longer than the inhale settles you faster." : "")
+      : `Too quick \u2014 a cycle has to run at least ${CUSTOM_MIN_CYCLE} seconds. Lengthen the inhale or the exhale.`;
+    note.classList.toggle("warn-note", !ok);
+    go.disabled = !ok;
+    paintCustomSummary();
+  };
+
+  [["in", "Inhale", CUSTOM_MIN_BREATH], ["hold", "Hold", 0],
+   ["out", "Exhale", CUSTOM_MIN_BREATH], ["holdOut", "Hold after", 0]].forEach(([key, label, min]) => {
+    const cap = document.createElement("div");
+    cap.className = "cap"; cap.textContent = label;
+    const row = document.createElement("div");
+    row.className = "row";
+    const slider = document.createElement("input");
+    slider.type = "range"; slider.min = min; slider.max = CUSTOM_MAX; slider.step = 0.5;
+    slider.value = prefs.custom[key];
+    slider.setAttribute("aria-label", `${label} seconds`);
+    const val = document.createElement("span");
+    val.className = "slider-val";
+    val.textContent = `${prefs.custom[key]}s`;
+    slider.oninput = () => {
+      prefs.custom[key] = clamp(slider.value, min, CUSTOM_MAX);
+      val.textContent = `${prefs.custom[key]}s`;
+      savePrefs(); sync();
+    };
+    row.append(slider, val);
+    panel.append(cap, row);
+  });
+
+  name.oninput = () => { prefs.custom.name = name.value; savePrefs(); sync(); };
+  go.onclick = () => { const p = customPattern(); if (!go.disabled) openSession(p); };
+
+  panel.append(bar, note, go);
+  sync();
+  return panel;
 }
 
 function testSound() {
@@ -573,6 +681,12 @@ $("soundToggle").onclick = () => {
   slot.hidden = !slot.hidden;
   $("soundToggle").setAttribute("aria-expanded", String(!slot.hidden));
   renderPanels();
+};
+$("customToggle").onclick = () => {
+  const slot = $("customPanel");
+  slot.hidden = !slot.hidden;
+  $("customToggle").setAttribute("aria-expanded", String(!slot.hidden));
+  if (!slot.hidden) { slot.innerHTML = ""; slot.appendChild(buildCustom()); }
 };
 
 document.addEventListener("visibilitychange", () => {

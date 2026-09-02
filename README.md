@@ -41,6 +41,12 @@ Patterns are named for the situation you're in, not the count you're keeping —
 | Recover | Pursed Lip | 2 · 4 | Breathlessness |
 | Slow Down | Slow Six | 6 · 6 | Once 5.5 feels easy |
 
+### Custom
+
+Under the pattern list, **Custom** opens four sliders — inhale, hold, exhale, hold — and a name field, so you can dial in a rhythm and label it for the drive. It's saved, so it's still there next time.
+
+The sliders stop where breath-safety says they must: nothing above 10 seconds, no breath under 2, and no cycle quicker than 6 seconds a round, which is the pace of the briskest pattern shipped here. Set something faster and Start greys out rather than letting you run it, because deep breathing at a fast rate is precisely what causes grey-out. Leave a hold at zero and it drops out of the rhythm instead of running as a phase.
+
 ### Deliberately excluded
 
 Wim Hof rounds, breath of fire and kapalabhati, Buteyko air-hunger holds, any retention past about ten seconds, and alternate-nostril breathing. The first four can cause transient hypocapnia — tunnel vision and grey-out are documented — which is unacceptable at speed. The last one needs a hand off the wheel. Nothing shipped holds the breath longer than seven seconds.
