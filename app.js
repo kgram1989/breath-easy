@@ -53,15 +53,21 @@ const CUSTOM_MIN_CYCLE = 6;
 const CUSTOM_DEFAULT = { name: "", in: 4, hold: 4, out: 4, holdOut: 4 };
 
 /* ── preferences ──────────────────────────────────────────────── */
-const prefs = Object.assign(
-  { tone: "ocean", voice: "soft", minutes: 5, vol: 0.85 },
-  JSON.parse(localStorage.getItem("breatheasy") || "{}")
-);
-const savePrefs = () => localStorage.setItem("breatheasy", JSON.stringify(prefs));
+/* Storage can be corrupt, hand-edited, or unavailable outright (private
+   browsing, blocked site data). None of those may stop the page loading. */
+const PREF_DEFAULTS = { tone: "ocean", voice: "soft", minutes: 5, vol: 0.85 };
+let stored = {};
+try { stored = JSON.parse(localStorage.getItem("breatheasy") || "{}") || {}; } catch (e) {}
+const prefs = Object.assign({}, PREF_DEFAULTS, typeof stored === "object" ? stored : {});
+const savePrefs = () => { try { localStorage.setItem("breatheasy", JSON.stringify(prefs)); } catch (e) {} };
 
 /* localStorage is user-editable, so the limits are re-applied on load rather
    than trusted to the slider attributes that wrote them. */
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, Number.isFinite(+v) ? +v : lo));
+if (!["ocean", "hum", "none"].includes(prefs.tone)) prefs.tone = PREF_DEFAULTS.tone;
+if (!(prefs.voice in VOICES) && prefs.voice !== "off") prefs.voice = PREF_DEFAULTS.voice;
+if (!DURATIONS.includes(prefs.minutes)) prefs.minutes = PREF_DEFAULTS.minutes;
+prefs.vol = clamp(prefs.vol, 0, 1);
 prefs.custom = Object.assign({}, CUSTOM_DEFAULT, prefs.custom);
 prefs.custom.name = String(prefs.custom.name || "").slice(0, 24);
 prefs.custom.in = clamp(prefs.custom.in, CUSTOM_MIN_BREATH, CUSTOM_MAX);
@@ -97,11 +103,45 @@ const clips = {};      // decoded buffers, only valid for the live context
 const clipBytes = {};  // the encoded mp3s, kept so a rebuild needs no network
 let audioStalls = 0, rebuilding = false;
 
+/* Safari 16.4+ lets a page say what kind of audio it makes. Left on "auto",
+   iOS files Web Audio as ambient and only treats the page as media while the
+   keep-alive element is mid-play — so every hiccup in that element flips the
+   session category, and on Bluetooth or wireless CarPlay each flip
+   renegotiates the link and drops whatever was sounding. Pinning it to
+   "playback" holds the category steady for the whole session. */
+function claimAudioSession() {
+  try {
+    if (navigator.audioSession && navigator.audioSession.type !== "playback") navigator.audioSession.type = "playback";
+  } catch (e) {}
+}
+
+/* Transparent below -3 dBFS, then a tanh knee that never reaches full scale.
+   The voice clips peak at about -2 dBFS and playClip boosts them by up to
+   1.6x, so without this every loud syllable hard-clipped. A shaper rather
+   than a DynamicsCompressor: no makeup gain, no lookahead, no pumping of the
+   noise bed when the voice comes in. The input is halved first because a
+   shaper clamps anything outside [-1, 1] to the curve's ends. */
+function softLimitCurve() {
+  const n = 4097, c = new Float32Array(n), knee = 0.7, room = 1 - knee;
+  for (let i = 0; i < n; i++) {
+    const u = 2 * ((i / (n - 1)) * 2 - 1), m = Math.abs(u);
+    c[i] = Math.sign(u) * (m <= knee ? m : knee + room * Math.tanh((m - knee) / room));
+  }
+  return c;
+}
+
 function buildAudio() {
-  ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const Ctor = window.AudioContext || window.webkitAudioContext;
+  /* "playback" asks for larger output buffers. Nothing here needs low
+     latency, and a bigger buffer is what rides out the scheduling jitter of
+     a Bluetooth link instead of underrunning into a gap. */
+  try { ctx = new Ctor({ latencyHint: "playback" }); } catch (e) { ctx = new Ctor(); }
   master = ctx.createGain();
   master.gain.value = 1;
-  master.connect(ctx.destination);
+  const pad = ctx.createGain(), limiter = ctx.createWaveShaper();
+  pad.gain.value = 0.5;
+  limiter.curve = softLimitCurve();
+  master.connect(pad); pad.connect(limiter); limiter.connect(ctx.destination);
   const lp = ctx.createBiquadFilter();
   lp.type = "lowpass"; lp.frequency.value = 2600; lp.Q.value = 0.6;
   toneBus = ctx.createGain();
@@ -148,7 +188,12 @@ async function rebuildAudio() {
 function guardAudio() {
   try { if (keepAudio.paused) keepAudio.play().catch(() => {}); } catch (e) {}
   if (!ctx || rebuilding) return;
-  if (ctx.state === "running") { audioStalls = 0; paintAudioState(); return; }
+  if (ctx.state === "running") {
+    audioStalls = 0;
+    if (running && !carrier) carrierOn();
+    paintAudioState();
+    return;
+  }
   audioStalls++;
   if (ctx.state === "interrupted" || audioStalls >= 2) { audioStalls = 0; rebuildAudio(); }
   else audio();
@@ -216,15 +261,18 @@ function carrierOff() { try { carrier && carrier.stop(); } catch (e) {} carrier 
 
 let voiceState = "idle";
 async function loadVoice(id) {
-  if (!id || id === "off" || clips[id]) return;
+  if (!id || id === "off" || (clips[id] && CLIP_NAMES.every((k) => clips[id][k]))) return;
   voiceState = "loading"; renderPanels();
-  if (!clipBytes[id]) {
-    const bytes = {};
-    await Promise.all(CLIP_NAMES.map(async (k) => {
-      try { bytes[k] = await (await fetch(`${VOICES[id].dir}/${k}.mp3`)).arrayBuffer(); } catch (e) {}
-    }));
-    clipBytes[id] = bytes;
-  }
+  /* Only clips that actually arrived are kept, and any that did not are
+     asked for again next time — otherwise one dropped request on a weak
+     signal would leave that word missing for the life of the page. */
+  const bytes = clipBytes[id] || (clipBytes[id] = {});
+  await Promise.all(CLIP_NAMES.filter((k) => !bytes[k]).map(async (k) => {
+    try {
+      const res = await fetch(`${VOICES[id].dir}/${k}.mp3`);
+      if (res.ok) bytes[k] = await res.arrayBuffer();
+    } catch (e) {}
+  }));
   await decodeVoice(id);
   voiceState = clips[id] ? "ready" : "failed";
   renderPanels();
@@ -242,6 +290,7 @@ async function decodeVoice(id) {
   }));
   if (Object.keys(bank).length) clips[id] = bank;
 }
+const hasClip = (key) => !!(clips[prefs.voice] && clips[prefs.voice][key]);
 function playClip(key) {
   const bank = clips[prefs.voice];
   if (!bank || !bank[key]) return;
@@ -273,12 +322,18 @@ function cue(type, secs) {
 }
 
 /* Silent looping media so the OS treats this as playback and hands it to
-   Bluetooth or CarPlay, and so the link never goes dormant between cues. */
+   Bluetooth or CarPlay, and so the link never goes dormant between cues.
+
+   It runs 30 seconds per loop. It used to be 0.4s, which meant the media
+   element hit its end and restarted two and a half times a second — and on
+   iOS each restart briefly drops the element out of "playing", which can
+   renegotiate a Bluetooth or wireless CarPlay link mid-syllable. Wired
+   CarPlay rides that out; wireless audibly did not. 8 kHz keeps it ~470 KB. */
 const keepAudio = document.createElement("audio");
 keepAudio.loop = true; keepAudio.playsInline = true;
 (function () {
   try {
-  const sr = 8000, n = sr * 0.4, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+  const sr = 8000, n = sr * 30, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
   const str = (o, s) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
   str(0, "RIFF"); v.setUint32(4, 36 + n * 2, true); str(8, "WAVEfmt ");
   v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
@@ -305,12 +360,12 @@ async function holdScreen() {
       if (!holdVideo) {
         const c = document.createElement("canvas");
         c.width = c.height = 2;
+        if (!c.captureStream) throw new Error("no captureStream");
         const g = c.getContext("2d");
         let flip = 0;
         paintTimer = setInterval(() => {
           flip ^= 1; g.fillStyle = flip ? "#000000" : "#010101"; g.fillRect(0, 0, 2, 2);
         }, 400);
-        if (!c.captureStream) throw new Error("no captureStream");
         holdVideo = document.createElement("video");
         holdVideo.muted = holdVideo.defaultMuted = true;
         holdVideo.loop = true;
@@ -338,7 +393,7 @@ function releaseScreen() {
 /* ── state ────────────────────────────────────────────────────── */
 let pattern = PATTERNS[0];
 let running = false, done = false;
-let idx = 0, phaseStart = 0, sessionStart = 0, leadDone = false;
+let idx = 0, phaseStart = 0, sessionStart = 0, leadDone = false, readyPlayed = false;
 let prevVal = 0, cycles = 0, lastPaint = 0, lastGuard = 0, lastCount = -1, raf = null;
 
 const $ = (id) => document.getElementById(id);
@@ -365,23 +420,38 @@ const pt = (t, rad = R) => {
   }
 })();
 
+/* Runs ~30 times a second for the whole drive, on a phone that is often
+   hot in a windscreen mount and also rendering CarPlay. Only the arc and
+   needle move every frame; colour, glow, ticks and text are rewritten only
+   when they actually change, rather than ~25 DOM writes per frame. */
+const painted = { stroke: null, lit: -1, label: null, count: null };
 function paintGauge(value, type, label, count) {
   const inhaling = type === "in" || type === "top";
   const stroke = !running ? COLOR.muted : inhaling ? COLOR.amber : type === "out" ? COLOR.ice : COLOR.amberDim;
   const [vx, vy] = pt(Math.max(0.0001, value));
   const [sx, sy] = pt(0);
+  const fill = $("fill"), n = $("needle"), pl = $("phaseLabel");
   // large-arc flag flips past 180 degrees of a 270 degree sweep, i.e. two thirds
-  $("fill").setAttribute("d", `M ${sx} ${sy} A ${R} ${R} 0 ${value > 2 / 3 ? 1 : 0} 1 ${vx} ${vy}`);
-  $("fill").setAttribute("stroke", stroke);
-  $("fill").style.filter = running ? `drop-shadow(0 0 10px ${stroke}66)` : "none";
-  const n = $("needle");
-  n.setAttribute("cx", vx); n.setAttribute("cy", vy); n.setAttribute("fill", stroke);
-  n.style.filter = `drop-shadow(0 0 12px ${stroke})`;
+  fill.setAttribute("d", `M ${sx} ${sy} A ${R} ${R} 0 ${value > 2 / 3 ? 1 : 0} 1 ${vx} ${vy}`);
+  n.setAttribute("cx", vx); n.setAttribute("cy", vy);
+  const glow = `${stroke}|${running}`;
+  if (painted.stroke !== glow) {
+    painted.stroke = glow; painted.lit = -1;
+    fill.setAttribute("stroke", stroke);
+    fill.style.filter = running ? `drop-shadow(0 0 10px ${stroke}66)` : "none";
+    n.setAttribute("fill", stroke);
+    n.style.filter = `drop-shadow(0 0 12px ${stroke})`;
+    pl.setAttribute("fill", stroke);
+  }
   const ticks = $("ticks").children;
-  for (let i = 0; i < ticks.length; i++) ticks[i].setAttribute("stroke", i / 20 <= value ? stroke : COLOR.edge);
-  const pl = $("phaseLabel");
-  pl.textContent = label; pl.setAttribute("fill", stroke);
-  $("phaseCount").textContent = count;
+  let lit = 0;
+  while (lit < ticks.length && lit / 20 <= value) lit++;
+  if (painted.lit !== lit) {
+    painted.lit = lit;
+    for (let i = 0; i < ticks.length; i++) ticks[i].setAttribute("stroke", i < lit ? stroke : COLOR.edge);
+  }
+  if (painted.label !== label) { painted.label = label; pl.textContent = label; }
+  if (painted.count !== count) { painted.count = count; $("phaseCount").textContent = count; }
 }
 
 function paintHold() {
@@ -421,11 +491,14 @@ function step() {
     if (lastCount !== n) {
       lastCount = n;
       if (n === 3) {
-        playClip("ready");
         if (prefs.tone === "ocean") swell(240, 420, 2.6, prefs.vol * 0.35);
         else if (prefs.tone === "hum") glide(174.6, 196, 2.6, prefs.vol * 0.09);
       }
     }
+    /* On the first session, or straight after a rebuild, the clips are still
+       decoding on the first frame — so "Let's begin" waits up to a second
+       for them rather than being skipped outright. */
+    if (!readyPlayed && since < 1 && hasClip("ready")) { readyPlayed = true; playClip("ready"); }
     paintGauge(0, "holdOut", "Get set", n);
     raf = requestAnimationFrame(step);
     return;
@@ -434,7 +507,7 @@ function step() {
   if (!leadDone) {
     leadDone = true; idx = 0; prevVal = 0;
     phaseStart = sessionStart + 3;
-    cue(pattern.phases[0][0], pattern.phases[0][1]);
+    if (now - phaseStart < 0.5) cue(pattern.phases[0][0], pattern.phases[0][1]);
   }
 
   let [type, secs, to] = pattern.phases[idx];
@@ -456,7 +529,11 @@ function step() {
     }
     [type, secs, to] = pattern.phases[idx];
     el = now - phaseStart;
-    cue(type, secs);
+    /* Coming back from the background (a call, another app) this loop walks
+       every phase that was missed in a single frame. Cueing each one stacked
+       a dozen voice clips on top of each other; only a phase that has only
+       just begun gets its cue, and the rhythm picks up at the next turn. */
+    if (el < 0.5) cue(type, secs);
   }
 
   if (now - lastPaint > 0.032) {
@@ -473,12 +550,13 @@ function start() {
      back in — so a context found dead here is rebuilt now rather than waited
      out on the guard tick. */
   audioStalls = 0;
+  claimAudioSession();
   if (ctx && ctx.state === "interrupted") rebuildAudio(); else audio();
   loadVoice(prefs.voice);
   holdScreen();
   carrierOn();
   keepAudio.play().catch(() => {});
-  idx = 0; prevVal = 0; cycles = 0; leadDone = false; lastCount = -1; lastGuard = 0;
+  idx = 0; prevVal = 0; cycles = 0; leadDone = false; readyPlayed = false; lastCount = -1; lastGuard = 0;
   sessionStart = performance.now() / 1000;
   running = true; done = false;
   if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "playing";
@@ -661,6 +739,7 @@ function buildCustom() {
 }
 
 function testSound() {
+  claimAudioSession();
   audio();
   keepAudio.play().catch(() => {});
   carrierOn();
@@ -675,7 +754,15 @@ function testSound() {
     else if (prefs.tone === "hum") glide(233, 196, 4.4, Math.max(0.06, prefs.vol * 0.17));
     playClip("exhale");
   }, 4700);
-  setTimeout(carrierOff, 9500);
+  /* Only tidy up if no session started meanwhile — this used to kill the
+     carrier out from under a session begun within 10s of a test, leaving the
+     link to go dormant for the whole drive. It also left the keep-alive
+     looping forever, holding the media session with nothing playing. */
+  setTimeout(() => {
+    if (running) return;
+    carrierOff();
+    try { keepAudio.pause(); } catch (e) {}
+  }, 9500);
 }
 
 /* ── home list ────────────────────────────────────────────────── */

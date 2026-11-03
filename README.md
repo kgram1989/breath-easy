@@ -57,6 +57,7 @@ Everything is synthesised in the browser except the voice clips.
 
 - **Ocean** (default) is brown noise through a bandpass that sweeps 300→880 Hz on the inhale and back on the exhale. Noise rather than a tone, because pure tones are what alarms are made of. Level is scaled ×4.4 to compensate for bandpass loss, so it matches Hum in loudness.
 - **Hum** is a low sine pair near 196 Hz moving a minor third, for cabins too noisy for the noise cue.
+- A soft limiter on the output stops the voice clipping at high volume; it does nothing below −3 dBFS.
 - Every cue uses a raised-cosine envelope and runs about 90% of its phase, so nothing has an onset to flinch at.
 - Voice clips are Piper neural TTS at 22.05 kHz. `audio/soft` is `en_GB-jenny_dioco-medium`; `audio/warm` is `en_US-libritts_r-medium`.
 
@@ -64,7 +65,7 @@ Everything is synthesised in the browser except the voice clips.
 
 Two problems that aren't obvious:
 
-1. Web Audio on its own often isn't classified as *media*, so the phone plays it locally instead of handing it to Bluetooth or CarPlay. A silent looping `<audio>` element claims the media session and fixes the routing. It also publishes Media Session metadata, so the head unit shows the track and the steering-wheel controls work.
+1. Web Audio on its own often isn't classified as *media*, so the phone plays it locally instead of handing it to Bluetooth or CarPlay. A silent looping `<audio>` element claims the media session and fixes the routing. It also publishes Media Session metadata, so the head unit shows the track and the steering-wheel controls work. The loop is 30 seconds long: a fraction-of-a-second loop restarts the element several times a second, and over Bluetooth or wireless CarPlay each restart can drop a syllable. On Safari 16.4+ the page also declares itself as `playback` audio through the Audio Session API, so iOS doesn't flip the category while the element loops.
 2. Bluetooth A2DP goes dormant between sounds and swallows the front of short cues. An inaudible 32 Hz carrier runs for the whole session to hold the link open.
 3. A phone call, Siri, or another app taking the audio session can leave the browser's audio context dead in a way that resuming it will not fix. The session watches for this and rebuilds the audio engine from scratch, reporting "sound stalled" next to the screen-hold line while it does — so cues come back on their own instead of needing the app closed and reopened.
 

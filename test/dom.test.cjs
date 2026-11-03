@@ -33,6 +33,12 @@ check("arc large-flag flips at two thirds", /value > 2 \/ 3/.test(js));
 check("cue envelopes are raised cosine", /hann\(72/.test(js));
 check("bluetooth keep-alive present", /keepAudio/.test(js));
 check("a2dp carrier present", /frequency\.value = 32/.test(js));
+// a 0.4s loop restarted the media element 2.5x a second and broke up
+// wireless CarPlay; the keep-alive has to be long
+check("keep-alive loops no faster than every 10s", (() => { const m = js.match(/const sr = 8000, n = sr \* (\d+)/); return !!m && +m[1] >= 10; })());
+check("audio session pinned to playback", /audioSession\.type = "playback"/.test(js));
+check("output passes through the soft limiter", /limiter\.connect\(ctx\.destination\)/.test(js));
+check("test sound leaves a running session's carrier alone", /if \(running\) return;\s*carrierOff\(\)/.test(js));
 check("no breath hold longer than 10s", ![...js.matchAll(/\["hold(?:Out)?", (\d+(?:\.\d+)?)\]/g)].some((m) => +m[1] > 10));
 check("custom sliders cap at 10s", /CUSTOM_MAX = 10\b/.test(js));
 check("custom breaths floor at 2s", /CUSTOM_MIN_BREATH = 2\b/.test(js));
@@ -97,15 +103,17 @@ check("custom session reports its rate", /breaths a minute/.test(d.getElementByI
    A second page is loaded with a context whose state the test can drive. */
 (async () => {
   const built = [];
+  let sources = 0;
   function fake() {  // a constructor: the app calls `new AudioContext()`
     const c = {
       state: "running", currentTime: 0, sampleRate: 44100, destination: {},
       close: () => { c.state = "closed"; c.closed = true; return Promise.resolve(); },
       resume: () => { if (c.state === "suspended") c.state = "running"; return Promise.resolve(); },
       createGain: () => ({ gain: { value: 0, setValueCurveAtTime() {} }, connect() {}, disconnect() {} }),
+      createWaveShaper: () => ({ curve: null, connect() {} }),
       createBiquadFilter: () => ({ type: "", frequency: { value: 0, setValueAtTime() {}, setValueCurveAtTime() {} }, Q: { value: 0 }, connect() {} }),
       createOscillator: () => ({ type: "", frequency: { value: 0, setValueAtTime() {}, setValueCurveAtTime() {} }, connect() {}, start() {}, stop() {} }),
-      createBufferSource: () => ({ buffer: null, loop: false, connect() {}, start() {}, stop() {} }),
+      createBufferSource: () => { sources++; return { buffer: null, loop: false, connect() {}, start() {}, stop() {} }; },
       createBuffer: () => ({ getChannelData: () => new Float32Array(8) }),
       decodeAudioData: () => Promise.resolve({}),
     };
@@ -145,6 +153,34 @@ check("custom session reports its rate", /breaths a minute/.test(d.getElementByI
   check("an interrupted context is rebuilt", built.length === 2 && built[1].state === "running");
   check("the session keeps running through a rebuild", !d2.getElementById("session").hidden);
   check("the stall is reported while it lasts", d2.getElementById("audioState").textContent.startsWith("sound"));
+
+  /* 8. coming back from the background. rAF stops while the app is hidden,
+     and the catch-up loop used to fire a cue for every phase it walked
+     through on return — a dozen swells and voice clips in one frame. */
+  let clock = 1000;
+  Object.defineProperty(w2.performance, "now", { value: () => clock * 1000, configurable: true });
+  const frames = () => new Promise((r) => setTimeout(r, 80));
+  tap(d2.getElementById("stage"));  // stop
+  tap(d2.getElementById("stage"));  // start on the fake clock
+  clock += 3.2; await frames();
+  const before = sources;
+  clock += 120; await frames();
+  check("returning from the background does not stack missed cues", sources - before <= 2);
+  check("the session is still running after the catch-up", d2.getElementById("hint").classList.contains("running"));
+
+  // 9. storage that is corrupt or hand-edited must not stop the page loading
+  const dom3 = new JSDOM(html, { runScripts: "outside-only", url: "https://example.com/", pretendToBeVisual: true, virtualConsole: quiet });
+  dom3.window.localStorage.setItem("breatheasy", '{"voice":"robot","tone":7,"minutes":"x","vol":9,"custom":{"in":99}');
+  dom3.window.URL.createObjectURL = () => "blob:stub";
+  dom3.window.scrollTo = () => {};
+  try { dom3.window.eval(js); check("corrupt prefs do not break the page", dom3.window.document.querySelectorAll("#patterns .card").length === 8); }
+  catch (e) { check("corrupt prefs do not break the page (" + e.message + ")", false); }
+  const dom4 = new JSDOM(html, { runScripts: "outside-only", url: "https://example.com/", pretendToBeVisual: true, virtualConsole: quiet });
+  dom4.window.localStorage.setItem("breatheasy", '{"voice":"robot","tone":7,"minutes":"x","vol":9}');
+  dom4.window.URL.createObjectURL = () => "blob:stub";
+  dom4.window.scrollTo = () => {};
+  try { dom4.window.eval(js); check("invalid prefs fall back to defaults", dom4.window.document.getElementById("soundSummary").textContent === "Ocean \u00b7 soft voice"); }
+  catch (e) { check("invalid prefs fall back to defaults (" + e.message + ")", false); }
 
   console.log(failures ? `\n${failures} FAILURES` : "\nAll checks passed.");
   process.exit(failures ? 1 : 0);
