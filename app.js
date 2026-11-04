@@ -101,7 +101,7 @@ const endValue = (t, to) => (t === "in" ? (to ?? 1) : t === "top" ? 1 : t === "o
 let ctx = null, master = null, toneBus = null, noiseBuf = null, carrier = null;
 const clips = {};      // decoded buffers, only valid for the live context
 const clipBytes = {};  // the encoded mp3s, kept so a rebuild needs no network
-let audioStalls = 0, rebuilding = false;
+let audioStalls = 0, rebuilding = false, rebuilds = 0;
 
 /* Safari 16.4+ lets a page say what kind of audio it makes. Left on "auto",
    iOS files Web Audio as ambient and only treats the page as media while the
@@ -147,7 +147,7 @@ function buildAudio() {
   toneBus = ctx.createGain();
   toneBus.connect(lp); lp.connect(master);
   noiseBuf = null;  // buffers belong to the context that made them
-  ctx.onstatechange = paintAudioState;
+  ctx.onstatechange = () => { paintAudioState(); paintDiag(); };
 }
 
 function audio() {
@@ -175,6 +175,7 @@ async function rebuildAudio() {
   /* Replace before closing: leaving ctx null across the await would let a cue
      landing mid-rebuild build a stray context that this one then orphans. */
   buildAudio();
+  rebuilds++;
   try { if (old) await old.close(); } catch (e) {}
   try { await ctx.resume(); } catch (e) {}
   await decodeVoice(prefs.voice);
@@ -200,10 +201,14 @@ function guardAudio() {
   paintAudioState();
 }
 
+/* Every sound below takes an optional start time on the audio clock, so a
+   session can be queued ahead of time, and hands back its nodes — sources to
+   stop and the output to disconnect — so a queued cue can be cancelled. */
+
 /* Hum: low sines under a raised cosine. Never starts, just becomes audible. */
-function glide(from, to, dur, gain, sub = true) {
+function glide(from, to, dur, gain, sub = true, at) {
   try {
-    const a = audio(), t = a.currentTime, g = a.createGain();
+    const a = audio(), t = Math.max(at ?? 0, a.currentTime), g = a.createGain(), srcs = [];
     g.gain.setValueCurveAtTime(hann(72, Math.max(0.0002, gain)), t, dur);
     g.connect(toneBus);
     (sub ? [[1, 1], [0.5, 0.45], [1.5, 0.08]] : [[1, 1]]).forEach(([mult, lvl]) => {
@@ -215,15 +220,17 @@ function glide(from, to, dur, gain, sub = true) {
       vg.gain.value = lvl;
       o.connect(vg); vg.connect(g);
       o.start(t); o.stop(t + dur + 0.12);
+      srcs.push(o);
     });
-  } catch (e) {}
+    return { srcs, out: g, end: t + dur + 0.12 };
+  } catch (e) { return null; }
 }
 
 /* Ocean: brown noise through a moving bandpass. Brightens as you fill.
    Peak is scaled up because the bandpass costs about 4.4x in level. */
-function swell(from, to, dur, gain, q = 2.2) {
+function swell(from, to, dur, gain, q = 2.2, at) {
   try {
-    const a = audio(), t = a.currentTime;
+    const a = audio(), t = Math.max(at ?? 0, a.currentTime);
     if (!noiseBuf) {
       const len = Math.floor(a.sampleRate * 3);
       noiseBuf = a.createBuffer(1, len, a.sampleRate);
@@ -244,7 +251,8 @@ function swell(from, to, dur, gain, q = 2.2) {
     g.gain.setValueCurveAtTime(hann(72, Math.max(0.0002, gain)), t, dur);
     src.connect(bp); bp.connect(g); g.connect(toneBus);
     src.start(t); src.stop(t + dur + 0.08);
-  } catch (e) {}
+    return { srcs: [src], out: g, end: t + dur + 0.08 };
+  } catch (e) { return null; }
 }
 
 function carrierOn() {
@@ -291,34 +299,38 @@ async function decodeVoice(id) {
   if (Object.keys(bank).length) clips[id] = bank;
 }
 const hasClip = (key) => !!(clips[prefs.voice] && clips[prefs.voice][key]);
-function playClip(key) {
+function playClip(key, at) {
   const bank = clips[prefs.voice];
-  if (!bank || !bank[key]) return;
+  if (!bank || !bank[key]) return null;
   try {
-    const a = audio(), s = a.createBufferSource(), g = a.createGain();
+    const a = audio(), s = a.createBufferSource(), g = a.createGain(), t = Math.max(at ?? 0, a.currentTime);
     s.buffer = bank[key];
     g.gain.value = Math.min(1.6, 0.55 + prefs.vol * 1.1);
-    s.connect(g); g.connect(master); s.start();
-  } catch (e) {}
+    s.connect(g); g.connect(master); s.start(t);
+    return { srcs: [s], out: g, end: t + bank[key].duration };
+  } catch (e) { return null; }
 }
 
-function cue(type, secs) {
+/* The wash under one phase. The voice is queued separately (see pump), as
+   it may still be decoding when the washes are first queued. */
+function toneCue(type, secs, at) {
   const duck = prefs.voice !== "off" ? 0.78 : 1;
   const v = prefs.vol * duck, span = secs * 0.94;
   if (prefs.tone === "ocean") {
-    if (type === "in") swell(300, 880, span, v * 0.75);
-    else if (type === "top") swell(880, 1020, span, v * 0.6);
-    else if (type === "out") swell(880, 300, span, v * 0.75);
-    else if (type === "hold") swell(880, 820, span, v * 0.3, 1.6);
-    else swell(300, 290, span, v * 0.3, 1.6);
-  } else if (prefs.tone === "hum") {
-    if (type === "in") glide(196, 233, span, v * 0.17);
-    else if (type === "top") glide(233, 262, span, v * 0.14);
-    else if (type === "out") glide(233, 196, span, v * 0.17);
-    else if (type === "hold") glide(233, 233, span, v * 0.07);
-    else glide(196, 196, span, v * 0.07);
+    if (type === "in") return swell(300, 880, span, v * 0.75, 2.2, at);
+    if (type === "top") return swell(880, 1020, span, v * 0.6, 2.2, at);
+    if (type === "out") return swell(880, 300, span, v * 0.75, 2.2, at);
+    if (type === "hold") return swell(880, 820, span, v * 0.3, 1.6, at);
+    return swell(300, 290, span, v * 0.3, 1.6, at);
   }
-  playClip(CLIP[type]);
+  if (prefs.tone === "hum") {
+    if (type === "in") return glide(196, 233, span, v * 0.17, true, at);
+    if (type === "top") return glide(233, 262, span, v * 0.14, true, at);
+    if (type === "out") return glide(233, 196, span, v * 0.17, true, at);
+    if (type === "hold") return glide(233, 233, span, v * 0.07, true, at);
+    return glide(196, 196, span, v * 0.07, true, at);
+  }
+  return null;
 }
 
 /* Silent looping media so the OS treats this as playback and hands it to
@@ -343,6 +355,9 @@ keepAudio.loop = true; keepAudio.playsInline = true;
   keepAudio.src = URL.createObjectURL(new Blob([buf], { type: "audio/wav" }));
   } catch (e) {}
 })();
+/* Media elements keep firing timeupdate in the background on iOS, which
+   makes it one more chance to top up the cue queue while the phone is locked. */
+keepAudio.addEventListener("timeupdate", () => pump());
 
 /* ── screen hold ──────────────────────────────────────────────── */
 let lock = null, holdVideo = null, paintTimer = null, holdState = "none";
@@ -393,8 +408,7 @@ function releaseScreen() {
 /* ── state ────────────────────────────────────────────────────── */
 let pattern = PATTERNS[0];
 let running = false, done = false;
-let idx = 0, phaseStart = 0, sessionStart = 0, leadDone = false, readyPlayed = false;
-let prevVal = 0, cycles = 0, lastPaint = 0, lastGuard = 0, lastCount = -1, raf = null;
+let sessionStart = 0, lastPaint = 0, lastGuard = 0, raf = null, ticker = null;
 
 const $ = (id) => document.getElementById(id);
 
@@ -476,73 +490,181 @@ function paintAudioState() {
 
 const mmss = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 
-/* ── engine ───────────────────────────────────────────────────── */
-function step() {
-  const now = performance.now() / 1000, since = now - sessionStart;
+/* ── timeline ─────────────────────────────────────────────────── */
+/* The session is a fixed timeline on the performance.now() clock: a 3s
+   lead-in, then the pattern repeating, ending on the first cycle boundary
+   past the chosen duration. Everything — which phase it is, what the gauge
+   shows, when each cue sounds — is a pure function of the time, so nothing
+   needs to have been watching to know where the session is. */
+const LEAD = 3;
+let plan = null;
 
-  if (now - lastGuard > 1.5) {
-    lastGuard = now;
+function makePlan(p, startWall) {
+  const offs = [];
+  let acc = 0;
+  for (const [, secs] of p.phases) { offs.push(acc); acc += secs; }
+  /* The fill a phase starts from is wherever the last phase that moved it
+     left off. Every pattern ends emptied, so this wraps cleanly to cycle 0. */
+  const prev = p.phases.map((_, i) => {
+    for (let k = 1; k <= p.phases.length; k++) {
+      const [t, , to] = p.phases[(i - k + p.phases.length) % p.phases.length];
+      const ev = endValue(t, to);
+      if (ev !== null) return ev;
+    }
+    return 0;
+  });
+  return { phases: p.phases, offs, prev, cycle: acc, t0: startWall + LEAD };
+}
+const phaseCount = () => plan.phases.length;
+const phaseStartAt = (n) => plan.t0 + Math.floor(n / phaseCount()) * plan.cycle + plan.offs[n % phaseCount()];
+function phaseIndexAt(w) {
+  if (w < plan.t0) return 0;
+  const c = Math.floor((w - plan.t0) / plan.cycle), within = w - plan.t0 - c * plan.cycle;
+  let i = phaseCount() - 1;
+  while (i > 0 && plan.offs[i] > within) i--;
+  return c * phaseCount() + i;
+}
+const endAt = () => (prefs.minutes > 0
+  ? plan.t0 + Math.ceil(prefs.minutes * 60 / plan.cycle - 1e-9) * plan.cycle
+  : Infinity);
+
+/* ── scheduler ────────────────────────────────────────────────── */
+/* Cues are queued up to HORIZON seconds ahead on the audio clock, not fired
+   from the frame loop. The frame loop stops dead when the phone locks or the
+   app goes to the background; the audio engine does not. So a locked phone
+   keeps breathing with you for as long as is queued, and every time the page
+   gets to run at all — a frame, the 1s ticker, the keep-alive's timeupdate —
+   the queue is topped back up. None of those three time anything: cue times
+   come from the timeline, and the audio clock plays them sample-accurately.
+
+   A cue whose phase began more than STALE ago is skipped, never played late.
+   That is what stops a pile-up when the page wakes after a long freeze: the
+   rhythm simply picks up at the next turn. */
+const HORIZON = 45, STALE = 0.5, SLIP = 0.25;
+let queue = [], schedCtx = null, nTone = 0, nVoice = 0;
+let leadQueued = false, readyPlayed = false, doneQueued = false;
+let clockSlips = 0, lagBase = null, lostLag = 0;
+
+function enqueue(kind, n, wallAt, off, node) {
+  if (node) queue.push({ kind, n, at: wallAt + off, off, end: node.end, srcs: node.srcs, out: node.out });
+}
+
+/* Called on pause, on any sound-setting change, and when the audio clock has
+   slipped against the timeline. Anything already sounding plays out exactly
+   as before — only cues that have not started yet are pulled, which can be
+   done without a click. */
+function cancelQueued(now, keepDone) {
+  queue = queue.filter((q) => {
+    if (q.at <= now || (keepDone && q.kind === "done")) return true;
+    for (const s of q.srcs) { try { s.stop(0); } catch (e) {} }
+    try { q.out.disconnect(); } catch (e) {}
+    if (q.kind === "tone") nTone = Math.min(nTone, q.n);
+    else if (q.kind === "voice") nVoice = Math.min(nVoice, q.n);
+    else if (q.kind === "done") doneQueued = false;
+    return false;
+  });
+}
+
+function doneCue(at) {
+  const parts = [playClip("done", at),
+    prefs.tone === "ocean" ? swell(620, 240, 3.4, prefs.vol * 0.5, 2.2, at)
+      : prefs.tone === "hum" ? glide(233, 174.6, 3.4, prefs.vol * 0.12, true, at) : null].filter(Boolean);
+  return parts.length ? { srcs: parts.flatMap((x) => x.srcs), out: { disconnect: () => parts.forEach((x) => x.out.disconnect()) },
+    end: Math.max(...parts.map((x) => x.end)) } : null;
+}
+
+function pump() {
+  if (!running) return;
+  const wall = performance.now() / 1000;
+
+  if (wall - lastGuard > 1.5) {
+    lastGuard = wall;
     guardAudio();
     try { if (holdVideo && holdVideo.paused) holdVideo.play().catch(() => {}); } catch (e) {}
+    paintDiag();
   }
+  if (wall >= endAt()) { finish(); return; }
+  if (!ctx || rebuilding || ctx.state !== "running") return;
 
-  if (since < 3) {
-    const n = Math.ceil(3 - since);
-    if (lastCount !== n) {
-      lastCount = n;
-      if (n === 3) {
-        if (prefs.tone === "ocean") swell(240, 420, 2.6, prefs.vol * 0.35);
-        else if (prefs.tone === "hum") glide(174.6, 196, 2.6, prefs.vol * 0.09);
-      }
+  const now = ctx.currentTime, off = now - wall;
+  if (schedCtx !== ctx) {
+    // a rebuilt context: everything queued died with the old one
+    queue = []; schedCtx = ctx; doneQueued = false;
+    nTone = nVoice = phaseIndexAt(wall);
+    lagBase = { wall, now };
+  } else if (queue.some((q) => q.at > now && Math.abs(q.off - off) > SLIP)) {
+    /* The audio clock fell behind the timeline: a dropout long enough to
+       lose a quarter second, or a suspend and resume. Re-queue against the
+       clock as it now stands, and count it — that count is the most direct
+       evidence there is of the link breaking up. */
+    clockSlips++;
+    lostLag += (wall - lagBase.wall) - (now - lagBase.now);
+    lagBase = { wall, now };
+    cancelQueued(now);
+  }
+  queue = queue.filter((q) => q.end > now);
+
+  if (!leadQueued) {
+    leadQueued = true;
+    if (wall - sessionStart < 1) {
+      enqueue("lead", -1, sessionStart, off, prefs.tone === "ocean" ? swell(240, 420, 2.6, prefs.vol * 0.35, 2.2, sessionStart + off)
+        : prefs.tone === "hum" ? glide(174.6, 196, 2.6, prefs.vol * 0.09, true, sessionStart + off) : null);
     }
-    /* On the first session, or straight after a rebuild, the clips are still
-       decoding on the first frame — so "Let's begin" waits up to a second
-       for them rather than being skipped outright. */
-    if (!readyPlayed && since < 1 && hasClip("ready")) { readyPlayed = true; playClip("ready"); }
-    paintGauge(0, "holdOut", "Get set", n);
-    raf = requestAnimationFrame(step);
-    return;
+  }
+  /* On the first session, or straight after a rebuild, the clips are still
+     decoding — so "Let's begin" waits up to a second for them rather than
+     being skipped outright. */
+  if (!readyPlayed && wall - sessionStart < 1 && hasClip("ready")) {
+    readyPlayed = true;
+    enqueue("ready", -1, Math.max(wall, sessionStart), off, playClip("ready", Math.max(wall, sessionStart) + off));
   }
 
-  if (!leadDone) {
-    leadDone = true; idx = 0; prevVal = 0;
-    phaseStart = sessionStart + 3;
-    if (now - phaseStart < 0.5) cue(pattern.phases[0][0], pattern.phases[0][1]);
+  const until = Math.min(wall + HORIZON, endAt()), first = phaseIndexAt(wall - STALE);
+  for (nTone = Math.max(nTone, first); phaseStartAt(nTone) < until; nTone++) {
+    const at = phaseStartAt(nTone);
+    if (at < wall - STALE) continue;
+    const [type, secs] = plan.phases[nTone % phaseCount()];
+    enqueue("tone", nTone, at, off, toneCue(type, secs, at + off));
   }
+  // the voice waits on its clips; the washes never wait on the voice
+  for (nVoice = Math.max(nVoice, first); phaseStartAt(nVoice) < until; nVoice++) {
+    const at = phaseStartAt(nVoice);
+    if (at < wall - STALE || prefs.voice === "off") continue;
+    if (!clips[prefs.voice]) break;
+    enqueue("voice", nVoice, at, off, playClip(CLIP[plan.phases[nVoice % phaseCount()][0]], at + off));
+  }
+  if (!doneQueued && endAt() < wall + HORIZON) {
+    doneQueued = true;
+    enqueue("done", -1, endAt(), off, doneCue(endAt() + off));
+  }
+}
 
-  let [type, secs, to] = pattern.phases[idx];
-  let el = now - phaseStart;
-  while (el >= secs) {
-    const ev = endValue(type, to);
-    if (ev !== null) prevVal = ev;
-    phaseStart += secs;
-    idx = (idx + 1) % pattern.phases.length;
-    if (idx === 0) {
-      cycles++;
-      if (prefs.minutes > 0 && since - 3 >= prefs.minutes * 60) {
-        stop(true);
-        playClip("done");
-        if (prefs.tone === "ocean") swell(620, 240, 3.4, prefs.vol * 0.5);
-        else if (prefs.tone === "hum") glide(233, 174.6, 3.4, prefs.vol * 0.12);
-        return;
-      }
-    }
-    [type, secs, to] = pattern.phases[idx];
-    el = now - phaseStart;
-    /* Coming back from the background (a call, another app) this loop walks
-       every phase that was missed in a single frame. Cueing each one stacked
-       a dozen voice clips on top of each other; only a phase that has only
-       just begun gets its cue, and the rhythm picks up at the next turn. */
-    if (el < 0.5) cue(type, secs);
-  }
+/* A sound setting changed mid-session: what is already queued was built with
+   the old one, so pull it and queue again from the next turn. */
+function soundChanged() {
+  if (!running || !ctx || schedCtx !== ctx) return;
+  cancelQueued(ctx.currentTime);
+  pump();
+}
 
-  if (now - lastPaint > 0.032) {
-    lastPaint = now;
-    paintGauge(fullness(type, to, prevVal, el / secs), type, LABEL[type], Math.max(1, Math.ceil(secs - el)));
-    const left = prefs.minutes > 0 ? Math.max(0, prefs.minutes * 60 - (since - 3)) : since - 3;
-    $("clock").textContent = `${prefs.minutes > 0 ? mmss(left) + " left" : mmss(left)} \u00b7 ${cycles} ${cycles === 1 ? "round" : "rounds"}`;
-  }
+/* ── frame loop: paints only ──────────────────────────────────── */
+function step() {
+  pump();
+  if (!running) return;
+  const wall = performance.now() / 1000;
+  if (wall - lastPaint > 0.032) { lastPaint = wall; paintSession(wall); }
   raf = requestAnimationFrame(step);
+}
+
+function paintSession(wall) {
+  const since = wall - sessionStart;
+  if (since < LEAD) { paintGauge(0, "holdOut", "Get set", Math.ceil(LEAD - since)); return; }
+  const n = phaseIndexAt(wall), i = n % phaseCount();
+  const [type, secs, to] = plan.phases[i], el = wall - phaseStartAt(n);
+  paintGauge(fullness(type, to, plan.prev[i], el / secs), type, LABEL[type], Math.max(1, Math.ceil(secs - el)));
+  const cycles = Math.floor((wall - plan.t0) / plan.cycle);
+  const left = prefs.minutes > 0 ? Math.max(0, prefs.minutes * 60 - (since - LEAD)) : since - LEAD;
+  $("clock").textContent = `${prefs.minutes > 0 ? mmss(left) + " left" : mmss(left)} · ${cycles} ${cycles === 1 ? "round" : "rounds"}`;
 }
 
 function start() {
@@ -556,29 +678,47 @@ function start() {
   holdScreen();
   carrierOn();
   keepAudio.play().catch(() => {});
-  idx = 0; prevVal = 0; cycles = 0; leadDone = false; readyPlayed = false; lastCount = -1; lastGuard = 0;
   sessionStart = performance.now() / 1000;
+  plan = makePlan(pattern, sessionStart);
+  queue = []; schedCtx = null; nTone = nVoice = 0;
+  leadQueued = false; readyPlayed = false; doneQueued = false; lastGuard = 0;
+  clockSlips = 0; lostLag = 0;
   running = true; done = false;
   if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "playing";
   $("hint").textContent = "Tap anywhere to pause";
   $("hint").classList.add("running");
   paintHold();
   paintAudioState();
+  pump();
+  clearInterval(ticker);
+  ticker = setInterval(pump, 1000);
   raf = requestAnimationFrame(step);
+}
+
+/* The closing cue was queued ahead like any other, so it has usually already
+   sounded by the time the page notices; it is only played here if the page
+   was frozen too long for it to have been queued at all. */
+function finish() {
+  const queued = doneQueued;
+  stop(true);
+  if (!queued) doneCue();
 }
 
 function stop(finished) {
   running = false; done = !!finished;
   if (raf) cancelAnimationFrame(raf);
   raf = null;
+  clearInterval(ticker); ticker = null;
+  if (ctx && schedCtx === ctx) cancelQueued(ctx.currentTime, finished);
   carrierOff();
   try { keepAudio.pause(); } catch (e) {}
   releaseScreen();
   if ("mediaSession" in navigator) navigator.mediaSession.playbackState = "paused";
   $("hint").textContent = finished ? "Tap to go again" : "Tap anywhere to begin";
   $("hint").classList.remove("running");
-  paintGauge(0, "holdOut", finished ? "Complete" : "Tap to start", finished ? "\u2713" : "\u2014");
+  paintGauge(0, "holdOut", finished ? "Complete" : "Tap to start", finished ? "✓" : "—");
   paintAudioState();
+  paintDiag();
 }
 
 /* ── settings panel, shared by both screens ───────────────────── */
@@ -590,7 +730,7 @@ function segRow(options, current, onPick) {
     b.className = "seg";
     b.textContent = label;
     b.setAttribute("aria-pressed", String(current === id));
-    b.onclick = () => { onPick(id); savePrefs(); renderPanels(); };
+    b.onclick = () => { onPick(id); savePrefs(); renderPanels(); soundChanged(); };
     row.appendChild(b);
   });
   return row;
@@ -617,7 +757,7 @@ function buildPanel() {
     b.innerHTML = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="${path}"/></svg>`;
     b.onclick = () => {
       prefs.vol = Math.min(1, Math.max(0, +(prefs.vol + sign * 0.1).toFixed(1)));
-      savePrefs(); renderPanels();
+      savePrefs(); renderPanels(); soundChanged();
     };
     return b;
   };
@@ -638,7 +778,48 @@ function buildPanel() {
   note.textContent = 'Do this parked. A brightening wash with "breathe in", then a darkening one with "breathe out".'
     + (voiceState === "loading" ? " Loading voice\u2026" : voiceState === "failed" ? " Voice clips failed to load — cues still work." : "");
   p.appendChild(note);
+
+  const diag = document.createElement("div");
+  diag.className = "diag";
+  const line = document.createElement("p");
+  line.className = "diag-line";
+  const copy = document.createElement("button");
+  copy.className = "diag-copy";
+  copy.textContent = "Copy audio details";
+  copy.onclick = () => {
+    const text = `${diagText()}\n${navigator.userAgent}`;
+    try {
+      navigator.clipboard.writeText(text).then(() => { copy.textContent = "Copied"; }, () => { copy.textContent = "Copy failed"; });
+    } catch (e) { copy.textContent = "Copy unavailable"; }
+  };
+  line.textContent = diagText();
+  diag.append(line, copy);
+  p.appendChild(diag);
   return p;
+}
+
+/* What the audio engine is actually doing, for when the car misbehaves.
+   "slips" counts the times the audio clock lost a quarter second or more
+   against the session timeline — a real dropout, not a guess — and "lost" is
+   how much time those, plus any smaller drift, add up to. Both reset each
+   session. */
+function diagText() {
+  if (!ctx) return "Audio not started yet \u2014 press Test or start a session.";
+  const ms = (x) => (typeof x === "number" && x > 0 ? `${Math.round(x * 1000)} ms` : "n/a");
+  let lost = lostLag;
+  if (running && lagBase && schedCtx === ctx) lost += (performance.now() / 1000 - lagBase.wall) - (ctx.currentTime - lagBase.now);
+  return [
+    `${(ctx.sampleRate / 1000).toFixed(1)} kHz`, `context ${ctx.state}`,
+    `buffer ${ms(ctx.baseLatency)}`, `output ${ms(ctx.outputLatency)}`,
+    `session ${navigator.audioSession ? navigator.audioSession.type : "n/a"}`,
+    `keep-alive ${keepAudio.paused ? "paused" : "playing"}`, `carrier ${carrier ? "on" : "off"}`,
+    `queued ${running ? queue.length : 0}`, `slips ${clockSlips}`,
+    `lost ${Math.max(0, Math.round(lost * 1000))} ms`, `rebuilds ${rebuilds}`,
+  ].join(" \u00b7 ");
+}
+function paintDiag() {
+  const text = diagText();
+  document.querySelectorAll(".diag-line").forEach((el) => { if (el.textContent !== text) el.textContent = text; });
 }
 
 function renderPanels() {
@@ -758,6 +939,7 @@ function testSound() {
      carrier out from under a session begun within 10s of a test, leaving the
      link to go dormant for the whole drive. It also left the keep-alive
      looping forever, holding the media session with nothing playing. */
+  setTimeout(paintDiag, 600);
   setTimeout(() => {
     if (running) return;
     carrierOff();
@@ -798,7 +980,7 @@ function renderDurations() {
     b.style.fontFamily = "var(--mono)";
     b.textContent = m === 0 ? "\u221e" : `${m}m`;
     b.setAttribute("aria-pressed", String(prefs.minutes === m));
-    b.onclick = () => { prefs.minutes = m; savePrefs(); renderPanels(); };
+    b.onclick = () => { prefs.minutes = m; savePrefs(); renderPanels(); soundChanged(); };
     row.appendChild(b);
   });
   const gear = document.createElement("button");
@@ -854,7 +1036,7 @@ $("customToggle").onclick = () => {
 /* Coming back from another app is the likeliest moment for the context to
    have been suspended or interrupted out from under the session. */
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible" && running) { holdScreen(); guardAudio(); }
+  if (document.visibilityState === "visible" && running) { holdScreen(); guardAudio(); pump(); }
 });
 window.addEventListener("keydown", (e) => {
   if (e.code === "Space" && !$("session").hidden) { e.preventDefault(); running ? stop(false) : start(); }

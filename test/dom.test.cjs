@@ -103,17 +103,25 @@ check("custom session reports its rate", /breaths a minute/.test(d.getElementByI
    A second page is loaded with a context whose state the test can drive. */
 (async () => {
   const built = [];
-  let sources = 0;
+  const sources = [];
   function fake() {  // a constructor: the app calls `new AudioContext()`
+    /* the audio clock tracks the page clock, as a healthy one does, so the
+       tests can move both together and check where cues land on it */
+    const born = w2.performance.now() / 1000;
     const c = {
-      state: "running", currentTime: 0, sampleRate: 44100, destination: {},
+      state: "running", sampleRate: 44100, destination: {}, baseLatency: 0.02,
+      get currentTime() { return w2.performance.now() / 1000 - born; },
       close: () => { c.state = "closed"; c.closed = true; return Promise.resolve(); },
       resume: () => { if (c.state === "suspended") c.state = "running"; return Promise.resolve(); },
       createGain: () => ({ gain: { value: 0, setValueCurveAtTime() {} }, connect() {}, disconnect() {} }),
       createWaveShaper: () => ({ curve: null, connect() {} }),
       createBiquadFilter: () => ({ type: "", frequency: { value: 0, setValueAtTime() {}, setValueCurveAtTime() {} }, Q: { value: 0 }, connect() {} }),
       createOscillator: () => ({ type: "", frequency: { value: 0, setValueAtTime() {}, setValueCurveAtTime() {} }, connect() {}, start() {}, stop() {} }),
-      createBufferSource: () => { sources++; return { buffer: null, loop: false, connect() {}, start() {}, stop() {} }; },
+      createBufferSource: () => {
+        const src = { buffer: null, loop: false, connect() {}, start(t) { src.when = t; }, stop(t) { src.stopAt = t; } };
+        sources.push(src);
+        return src;
+      },
       createBuffer: () => ({ getChannelData: () => new Float32Array(8) }),
       decodeAudioData: () => Promise.resolve({}),
     };
@@ -154,19 +162,39 @@ check("custom session reports its rate", /breaths a minute/.test(d.getElementByI
   check("the session keeps running through a rebuild", !d2.getElementById("session").hidden);
   check("the stall is reported while it lasts", d2.getElementById("audioState").textContent.startsWith("sound"));
 
-  /* 8. coming back from the background. rAF stops while the app is hidden,
-     and the catch-up loop used to fire a cue for every phase it walked
-     through on return — a dozen swells and voice clips in one frame. */
+  /* 8. the cue queue. Cues are queued ahead on the audio clock so a locked
+     phone keeps sounding; coming back from a long freeze must not stack
+     every missed cue at once, and pausing must pull what is queued. */
   let clock = 1000;
   Object.defineProperty(w2.performance, "now", { value: () => clock * 1000, configurable: true });
   const frames = () => new Promise((r) => setTimeout(r, 80));
+  const audioNow = () => built[built.length - 1].currentTime;
   tap(d2.getElementById("stage"));  // stop
   tap(d2.getElementById("stage"));  // start on the fake clock
   clock += 3.2; await frames();
-  const before = sources;
+  check("cues are queued well ahead on the audio clock", sources.some((x) => x.when > audioNow() + 20));
+
+  const before = sources.length;
   clock += 120; await frames();
-  check("returning from the background does not stack missed cues", sources - before <= 2);
-  check("the session is still running after the catch-up", d2.getElementById("hint").classList.contains("running"));
+  const fresh = sources.slice(before);
+  check("returning from a long freeze does not stack missed cues", fresh.filter((x) => x.when < audioNow() + 0.5).length <= 2);
+  check("and queues ahead again from where the session now is", fresh.some((x) => x.when > audioNow() + 20));
+  check("the session is still running after the freeze", d2.getElementById("hint").classList.contains("running"));
+
+  const ahead = sources.filter((x) => x.when > audioNow() + 1 && x.stopAt !== 0);
+  tap(d2.getElementById("stage"));  // pause
+  check("pausing pulls every cue queued ahead", ahead.length > 0 && ahead.every((x) => x.stopAt === 0));
+
+  tap(d2.getElementById("stage"));  // start again; 5 minute default
+  clock += 330; await frames();
+  check("a session ends on time from its timeline", d2.getElementById("hint").textContent === "Tap to go again");
+
+  check("the sound panel reports audio details", (() => {
+    tap(d2.getElementById("back"));
+    if (d2.getElementById("soundHome").hidden) tap(d2.getElementById("soundToggle"));
+    const el = d2.querySelector("#soundHome .diag-line");
+    return !!el && /kHz/.test(el.textContent) && /slips \d+/.test(el.textContent);
+  })());
 
   // 9. storage that is corrupt or hand-edited must not stop the page loading
   const dom3 = new JSDOM(html, { runScripts: "outside-only", url: "https://example.com/", pretendToBeVisual: true, virtualConsole: quiet });
