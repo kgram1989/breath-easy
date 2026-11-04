@@ -69,6 +69,14 @@ Two problems that aren't obvious:
 2. Bluetooth A2DP goes dormant between sounds and swallows the front of short cues. An inaudible 32 Hz carrier runs for the whole session to hold the link open.
 3. A phone call, Siri, or another app taking the audio session can leave the browser's audio context dead in a way that resuming it will not fix. The session watches for this and rebuilds the audio engine from scratch, reporting "sound stalled" next to the screen-hold line while it does — so cues come back on their own instead of needing the app closed and reopened.
 
+### Locking the phone
+
+Cues are queued about 45 seconds ahead on the audio engine's own clock and topped up whenever the page gets to run, so they keep coming with the screen locked or another app in front. Pause from the lock screen or the steering wheel as usual.
+
+### When the car's audio misbehaves
+
+The Sound panel ends with a line of audio details — sample rate, latency, whether the keep-alive and carrier are running, and how many times the audio clock *slipped* (lost a quarter second or more) this session. Slips are real dropouts. **Copy audio details** puts the line, plus the browser version, on the clipboard to send with a bug report.
+
 ### Keeping the screen on
 
 `navigator.wakeLock` is tried first. Where it's unavailable, a 2-pixel canvas is fed through `captureStream()` into an off-screen `<video>` — phones won't sleep while video is playing. The session screen reports which one is active, so it can't fail silently.

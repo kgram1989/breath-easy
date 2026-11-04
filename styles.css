@@ -99,6 +99,9 @@ h1 { font-family: var(--mono); font-size: 32px; font-weight: 500; margin: 6px 0 
   color: var(--amber); border-radius: 10px; padding: 12px 0; font-size: 14px;
 }
 .panel-note { color: var(--muted); font-size: 12px; margin: 8px 0 0; line-height: 1.5; }
+.diag { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--edge); }
+.diag-line { font-family: var(--mono); font-size: 11px; color: var(--muted); line-height: 1.6; margin: 0; overflow-wrap: anywhere; }
+.diag-copy { margin-top: 8px; background: none; border: 1px solid var(--edge); color: var(--muted); border-radius: 8px; padding: 6px 10px; font: inherit; font-size: 12px; }
 
 /* ── session ──────────────────────────────────────────────────── */
 .session {
